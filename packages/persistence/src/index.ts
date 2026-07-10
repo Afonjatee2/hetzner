@@ -70,6 +70,19 @@ export class WorkspaceDatabase {
         UNIQUE(task_id, relative_path),
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
       );
+      CREATE TABLE IF NOT EXISTS dev_servers (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        container_id TEXT NOT NULL,
+        network_name TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        stopped_at TEXT,
+        FOREIGN KEY(project_id) REFERENCES projects(id),
+        FOREIGN KEY(worktree_id) REFERENCES worktrees(task_id)
+      );
       CREATE TABLE IF NOT EXISTS audit_events (
         id TEXT PRIMARY KEY,
         timestamp TEXT NOT NULL,

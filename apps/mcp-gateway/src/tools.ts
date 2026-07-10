@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createAuditEvent } from "@gpt-dev/audit-service";
 import type { ArtifactService } from "@gpt-dev/artifact-service";
+import { BrowserAction, type BrowserService, type DevServerService } from "@gpt-dev/browser-service";
 import type { GitService } from "@gpt-dev/git-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { ProjectService } from "@gpt-dev/projects";
@@ -19,6 +20,8 @@ export interface Services {
   runner: DockerSandboxRunner;
   tasks: TaskService;
   artifacts: ArtifactService;
+  browser: BrowserService;
+  devServers: DevServerService;
 }
 
 interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
@@ -177,6 +180,55 @@ export function createMcpServer(services: Services): McpServer {
     description: "List indexed task artifacts and hashes.", inputSchema: { taskId: TaskId },
     annotations: { title: "List artifacts", readOnlyHint: true, openWorldHint: false }
   }, async (input) => safely(services, "list_artifacts", { taskId: input.taskId }, () => services.artifacts.list(input.taskId)));
+
+  server.registerTool("start_dev_server", {
+    description: "Start a managed development server inside a constrained container on an internal task-specific network. No host or public port is exposed.",
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId, executable: z.string().min(1).max(256),
+      args: z.array(z.string().max(4096)).max(64).default([]), port: z.number().int().min(1024).max(65535).default(3000),
+      image: z.string().max(256).optional()
+    },
+    annotations: { title: "Start dev server", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "start_dev_server", { projectId: input.projectId, taskId: input.taskId }, async () => {
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const project = services.projects.get(input.projectId);
+    const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
+    return services.devServers.start({
+      projectId: input.projectId, worktreeId: input.taskId, worktreePath: tree.path,
+      image: input.image ?? defaultImage, executable: input.executable, args: input.args, port: input.port
+    });
+  }));
+
+  server.registerTool("get_dev_server", {
+    description: "Read the state and internal address metadata for a managed development server.",
+    inputSchema: { serverId: TaskId }, annotations: { title: "Get dev server", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "get_dev_server", {}, () => services.devServers.get(input.serverId)));
+
+  server.registerTool("stop_dev_server", {
+    description: "Stop and remove a managed development-server container and its task-specific network.",
+    inputSchema: { serverId: TaskId }, annotations: { title: "Stop dev server", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "stop_dev_server", { destructive: true }, () => services.devServers.stop(input.serverId)));
+
+  server.registerTool("run_browser_check", {
+    description: "Run a bounded Playwright action list against a managed internal development server. Captures screenshots, trace, console errors, page errors and failed requests as task artifacts.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId, serverId: TaskId, actions: z.array(BrowserAction).min(1).max(100) },
+    annotations: { title: "Run browser check", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "run_browser_check", { projectId: input.projectId, taskId: input.taskId }, async () => {
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const devServer = services.devServers.get(input.serverId);
+    if (devServer.projectId !== input.projectId || devServer.worktreeId !== input.taskId || devServer.status !== "ready") {
+      throw new WorkspaceError("CONFLICT", "Dev server is not ready for this worktree");
+    }
+    const executionId = randomUUID();
+    const artifactDirectory = await services.artifacts.taskDirectory(executionId);
+    await services.browser.createScript(artifactDirectory, input.actions, ["workspace.test"]);
+    return services.tasks.start({
+      executionId, worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
+      image: "gptdev-runner-browser:local", executable: "node", args: ["/artifacts/browser-check.mjs"],
+      network: "restricted", networkName: devServer.networkName,
+      limits: { memory: "2g", cpus: 1, pids: 256, timeoutSeconds: 120, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
+    });
+  }));
 
   server.registerTool("commit_task", {
     description: "Stage and commit all task-worktree changes after explicit user approval. Does not push or merge.",

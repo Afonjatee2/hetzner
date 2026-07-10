@@ -73,6 +73,25 @@ try {
   const diff = await call("git_diff", { projectId: "fixture-node", taskId: worktreeId });
   assert(diff.data.includes("return left + right"));
 
+  const devServer = await call("start_dev_server", {
+    projectId: "fixture-node", taskId: worktreeId, executable: "node", args: ["src/server.js"], port: 3000
+  });
+  assert.equal(devServer.data.status, "ready");
+  const browserCheck = await call("run_browser_check", {
+    projectId: "fixture-node", taskId: worktreeId, serverId: devServer.data.id,
+    actions: [
+      { type: "navigate", url: "http://workspace.test:3000" },
+      { type: "screenshot", name: "fixture.png" }
+    ]
+  });
+  assert.equal((await waitForTask(browserCheck.data.id)).status, "succeeded");
+  const browserArtifacts = await call("list_artifacts", { taskId: browserCheck.data.id });
+  for (const expected of ["fixture.png", "trace.zip", "browser-events.json"]) {
+    assert(browserArtifacts.data.some((artifact) => artifact.relativePath === expected));
+  }
+  const stoppedServer = await call("stop_dev_server", { serverId: devServer.data.id });
+  assert.equal(stoppedServer.data.status, "stopped");
+
   const isolation = await call("run_command", {
     projectId: "fixture-node", taskId: worktreeId, executable: "sh",
     args: ["-c", "test ! -e /var/run/docker.sock && test ! -e /etc/gpt-dev && test ! -e /root/.ssh"], network: "none"

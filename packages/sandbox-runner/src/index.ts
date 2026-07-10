@@ -20,6 +20,7 @@ export interface SandboxRequest {
   worktreePath: string;
   artifactPath: string;
   network: NetworkMode;
+  networkName?: string;
   limits: SandboxLimits;
 }
 
@@ -62,8 +63,11 @@ export class DockerSandboxRunner {
   }
 
   async run(request: SandboxRequest, callbacks: SandboxCallbacks): Promise<SandboxResult> {
-    if (request.network !== "none") {
-      throw new WorkspaceError("FORBIDDEN", "Networked task execution requires a separately approved policy");
+    if (request.network === "registry") {
+      throw new WorkspaceError("FORBIDDEN", "Registry-only task networking is not configured");
+    }
+    if (request.network === "restricted" && !request.networkName?.match(/^gptdev-preview-[a-f0-9-]{36}$/)) {
+      throw new WorkspaceError("FORBIDDEN", "Restricted networking requires a task-specific preview network");
     }
     const workspaceStat = await stat(request.worktreePath);
     const uid = typeof workspaceStat.uid === "number" ? workspaceStat.uid : 1000;
@@ -71,7 +75,7 @@ export class DockerSandboxRunner {
     const name = `gptdev-${request.taskId}`;
     const createArgs = [
       "create", "--name", name,
-      "--network", "none",
+      "--network", request.network === "restricted" ? request.networkName! : "none",
       "--read-only",
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true",

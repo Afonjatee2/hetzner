@@ -22,6 +22,7 @@ export interface TaskRecord {
 }
 
 export interface StartTaskInput {
+  executionId?: string;
   worktreeId: string;
   projectId: string;
   worktreePath: string;
@@ -29,6 +30,7 @@ export interface StartTaskInput {
   executable: string;
   args: string[];
   network: NetworkMode;
+  networkName?: string;
   limits: SandboxLimits;
 }
 
@@ -51,7 +53,7 @@ export class TaskService {
   }
 
   start(input: StartTaskInput): Promise<TaskRecord> {
-    const id = randomUUID();
+    const id = input.executionId ?? randomUUID();
     const createdAt = new Date().toISOString();
     this.database.db.prepare(`
       INSERT INTO tasks (id, project_id, worktree_id, worktree_path, status, image, command_json, created_at)

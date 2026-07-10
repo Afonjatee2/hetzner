@@ -104,6 +104,12 @@ importers:
 
   packages/browser-service:
     dependencies:
+      '@gpt-dev/audit-service':
+        specifier: workspace:*
+        version: link:../audit-service
+      '@gpt-dev/persistence':
+        specifier: workspace:*
+        version: link:../persistence
       '@gpt-dev/schemas':
         specifier: workspace:*
         version: link:../schemas
