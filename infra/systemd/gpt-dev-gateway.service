@@ -1,6 +1,6 @@
 [Unit]
 Description=Hetzner Dev Workspace MCP Gateway
-After=network-online.target docker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -19,9 +19,7 @@ ProtectHome=true
 ReadWritePaths=/srv/gpt-hosted /var/lib/gpt-dev
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 LockPersonality=true
-MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
-
