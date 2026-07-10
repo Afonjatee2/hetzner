@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up Hetzner Dev Workspace state
+
+[Service]
+Type=oneshot
+User=gptdev
+Group=gptdev
+ExecStart=/opt/hetzner-dev-workspace/infra/backup/backup.sh
+

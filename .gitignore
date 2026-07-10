@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+.state/
+.artifacts/
+playwright-report/
+test-results/
+fixtures/workspaces/

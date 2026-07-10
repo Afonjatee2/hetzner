@@ -1,0 +1,17 @@
+{
+  "name": "@gpt-dev/mcp-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@gpt-dev/artifact-service": "workspace:*",
+    "@gpt-dev/audit-service": "workspace:*",
+    "@gpt-dev/browser-service": "workspace:*",
+    "@gpt-dev/git-service": "workspace:*",
+    "@gpt-dev/persistence": "workspace:*",
+    "@gpt-dev/projects": "workspace:*",
+    "@gpt-dev/sandbox-runner": "workspace:*",
+    "@gpt-dev/schemas": "workspace:*",
+    "@gpt-dev/task-service": "workspace:*"
+  }
+}

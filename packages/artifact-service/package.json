@@ -1,0 +1,13 @@
+{
+  "name": "@gpt-dev/artifact-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@gpt-dev/audit-service": "workspace:*",
+    "@gpt-dev/persistence": "workspace:*",
+    "@gpt-dev/schemas": "workspace:*"
+  }
+}

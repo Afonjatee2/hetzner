@@ -1,0 +1,10 @@
+.git
+node_modules
+**/dist
+.state
+.artifacts
+coverage
+test-results
+playwright-report
+docs/evidence
+

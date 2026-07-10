@@ -1,0 +1,15 @@
+{
+  "name": "@gpt-dev/task-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@gpt-dev/artifact-service": "workspace:*",
+    "@gpt-dev/audit-service": "workspace:*",
+    "@gpt-dev/persistence": "workspace:*",
+    "@gpt-dev/sandbox-runner": "workspace:*",
+    "@gpt-dev/schemas": "workspace:*"
+  }
+}

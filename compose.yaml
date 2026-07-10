@@ -1,0 +1,63 @@
+name: hetzner-dev-workspace
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gptdev-gateway:local
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=128m
+    ports:
+      - "127.0.0.1:${PORT:-8081}:8081"
+    environment:
+      NODE_ENV: "${NODE_ENV:-development}"
+      HOST: 0.0.0.0
+      PORT: 8081
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-http://127.0.0.1:8081}"
+      WORKSPACE_ROOT: /srv/gpt-hosted
+      WORKTREE_ROOT: /srv/gpt-hosted/.worktrees
+      STATE_DIR: /var/lib/gpt-dev
+      ARTIFACT_DIR: /var/lib/gpt-dev/tasks
+      DATABASE_URL: /var/lib/gpt-dev/app.db
+      AUTH_MODE: "${AUTH_MODE:-development}"
+      OAUTH_ISSUER: "${OAUTH_ISSUER:-}"
+      OAUTH_AUDIENCE: "${OAUTH_AUDIENCE:-}"
+      OAUTH_JWKS_URI: "${OAUTH_JWKS_URI:-}"
+    volumes:
+      - "${WORKSPACE_ROOT:-./fixtures/workspaces}:/srv/gpt-hosted"
+      - "${STATE_ROOT:-./.state}:/var/lib/gpt-dev"
+      - "${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  runner-node:
+    profiles: ["images"]
+    build:
+      context: runner-images/node
+    image: gptdev-runner-node:local
+    command: ["node", "--version"]
+
+  runner-python:
+    profiles: ["images"]
+    build:
+      context: runner-images/python
+    image: gptdev-runner-python:local
+    command: ["python", "--version"]
+
+  runner-browser:
+    profiles: ["images"]
+    build:
+      context: runner-images/browser
+    image: gptdev-runner-browser:local
+    command: ["node", "--version"]
+

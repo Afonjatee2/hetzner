@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist", "tsBuildInfoFile": "dist/.tsbuildinfo" },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../artifact-service" }, { "path": "../audit-service" }, { "path": "../persistence" },
+    { "path": "../sandbox-runner" }, { "path": "../schemas" }
+  ]
+}

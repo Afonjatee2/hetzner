@@ -1,0 +1,11 @@
+tunnel: <new-hetzner-tunnel-uuid>
+credentials-file: /etc/cloudflared/<new-hetzner-tunnel-uuid>.json
+
+ingress:
+  - hostname: dev-mcp.remoteconnector.uk
+    service: http://127.0.0.1:8081
+    originRequest:
+      connectTimeout: 10s
+      noHappyEyeballs: false
+  - service: http_status:404
+

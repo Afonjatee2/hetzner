@@ -1,0 +1,206 @@
+import { randomUUID } from "node:crypto";
+import { z } from "zod/v4";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createAuditEvent } from "@gpt-dev/audit-service";
+import type { ArtifactService } from "@gpt-dev/artifact-service";
+import type { GitService } from "@gpt-dev/git-service";
+import type { WorkspaceDatabase } from "@gpt-dev/persistence";
+import type { ProjectService } from "@gpt-dev/projects";
+import type { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
+import { ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from "@gpt-dev/schemas";
+import type { TaskService } from "@gpt-dev/task-service";
+import type { Config } from "./config.js";
+
+export interface Services {
+  config: Config;
+  database: WorkspaceDatabase;
+  projects: ProjectService;
+  git: GitService;
+  runner: DockerSandboxRunner;
+  tasks: TaskService;
+  artifacts: ArtifactService;
+}
+
+interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
+
+function worktree(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
+  const row = database.db.prepare(`
+    SELECT task_id AS taskId, project_id AS projectId, path, branch, status, created_at AS createdAt
+    FROM worktrees WHERE task_id=? AND project_id=?
+  `).get(taskId, projectId) as WorktreeRecord | undefined;
+  if (!row) throw new WorkspaceError("NOT_FOUND", "Task worktree not found for project");
+  if (row.status !== "active") throw new WorkspaceError("CONFLICT", `Worktree is ${row.status}`);
+  return row;
+}
+
+function content(value: unknown, isError = false) {
+  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }], isError };
+}
+
+function registerAudit(services: Services, action: string, options: { projectId?: string; taskId?: string; destructive?: boolean; networked?: boolean; detail?: Record<string, unknown> } = {}): string {
+  const event = createAuditEvent({
+    action, actor: "mcp-user", destructive: options.destructive ?? false, networked: options.networked ?? false,
+    detail: options.detail ?? {},
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    ...(options.taskId ? { taskId: options.taskId } : {})
+  });
+  services.database.recordAudit(event);
+  return event.id;
+}
+
+async function safely<T>(services: Services, action: string, options: Parameters<typeof registerAudit>[2], callback: () => Promise<T> | T) {
+  const auditId = registerAudit(services, action, options);
+  try {
+    return content({ ok: true, data: await callback(), auditId });
+  } catch (error) {
+    const known = error instanceof WorkspaceError ? error : new WorkspaceError("INTERNAL", error instanceof Error ? error.message : String(error));
+    return content({ ok: false, error: { code: known.code, message: known.message, retryable: known.retryable, details: known.details }, auditId }, true);
+  }
+}
+
+function rootFor(services: Services, projectId: string, taskId?: string): string {
+  return taskId ? worktree(services.database, projectId, taskId).path : services.projects.get(projectId).canonicalPath;
+}
+
+export function createMcpServer(services: Services): McpServer {
+  const server = new McpServer({ name: "hetzner-dev-workspace", version: "0.1.0" }, { capabilities: { logging: {} } });
+
+  server.registerTool("system_health", {
+    description: "Read gateway, SQLite, workspace and Docker runner health. Makes no changes.",
+    inputSchema: {}, annotations: { title: "System health", readOnlyHint: true, openWorldHint: false }
+  }, async () => safely(services, "system_health", {}, async () => ({
+    gateway: "ok", database: services.database.db.prepare("SELECT 1 AS ok").get(), docker: await services.runner.health(),
+    workspaceRoot: services.config.workspaceRoot, architecture: process.arch, uptimeSeconds: Math.floor(process.uptime())
+  })));
+
+  server.registerTool("list_projects", {
+    description: "List approved project IDs and metadata. Does not expose secrets or file contents.",
+    inputSchema: {}, annotations: { title: "List projects", readOnlyHint: true, openWorldHint: false }
+  }, async () => safely(services, "list_projects", {}, () => services.projects.list()));
+
+  server.registerTool("register_project", {
+    description: "Register an existing approved Git checkout below the workspace root. Requires explicit approval for company or client data.",
+    inputSchema: { id: ProjectId, path: z.string().min(1), defaultBranch: z.string().min(1).default("main"), runtime: z.enum(["node", "python", "generic"]).default("generic") },
+    annotations: { title: "Register project", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "register_project", { projectId: input.id }, () => services.projects.register({ id: input.id, canonicalPath: input.path, defaultBranch: input.defaultBranch, runtime: input.runtime })));
+
+  server.registerTool("project_tree", {
+    description: "Return a bounded tree for an approved project or active task worktree.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), path: z.string().default("."), maxEntries: z.number().int().min(1).max(5000).default(1000), maxDepth: z.number().int().min(1).max(20).default(8) },
+    annotations: { title: "Project tree", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "project_tree", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.tree(rootFor(services, input.projectId, input.taskId), input.path, input.maxEntries, input.maxDepth)));
+
+  server.registerTool("read_file", {
+    description: "Read a bounded UTF-8 text file from an approved project or active task worktree. Rejects binaries and path escapes.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), path: RelativePath, maxBytes: z.number().int().min(1).max(2_000_000).default(1_000_000) },
+    annotations: { title: "Read file", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "read_file", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.readText(rootFor(services, input.projectId, input.taskId), input.path, input.maxBytes)));
+
+  server.registerTool("search_code", {
+    description: "Search text with ripgrep inside an approved project or active task worktree. Results are bounded.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), pattern: z.string().min(1).max(512), maxResults: z.number().int().min(1).max(1000).default(200) },
+    annotations: { title: "Search code", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "search_code", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.search(rootFor(services, input.projectId, input.taskId), input.pattern, input.maxResults)));
+
+  server.registerTool("create_task_worktree", {
+    description: "Create an isolated Git branch and worktree for a coding task. Canonical checkouts are not modified.",
+    inputSchema: { projectId: ProjectId, slug: z.string().max(64).default("task") },
+    annotations: { title: "Create task worktree", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "create_task_worktree", { projectId: input.projectId }, async () => {
+    const project = services.projects.get(input.projectId);
+    const taskId = randomUUID();
+    const created = await services.git.createWorktree(project.canonicalPath, project.id, taskId, input.slug);
+    const record = { taskId, projectId: project.id, path: created.path, branch: created.branch, status: "active", createdAt: new Date().toISOString() };
+    services.database.db.prepare(`INSERT INTO worktrees (task_id, project_id, path, branch, status, created_at) VALUES (@taskId,@projectId,@path,@branch,@status,@createdAt)`).run(record);
+    return record;
+  }));
+
+  server.registerTool("write_file", {
+    description: "Create or replace a UTF-8 file atomically inside an active task worktree. Never writes to a canonical checkout.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId, path: RelativePath, content: z.string().max(2_000_000) },
+    annotations: { title: "Write file", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "write_file", { projectId: input.projectId, taskId: input.taskId }, async () => {
+    await services.projects.writeText(rootFor(services, input.projectId, input.taskId), input.path, input.content);
+    return { path: input.path, bytes: Buffer.byteLength(input.content) };
+  }));
+
+  server.registerTool("delete_path", {
+    description: "Delete a file or directory only inside an active task worktree. This is destructive and cannot target the worktree root.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId, path: RelativePath },
+    annotations: { title: "Delete path", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "delete_path", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
+    await services.projects.remove(rootFor(services, input.projectId, input.taskId), input.path); return { deleted: input.path };
+  }));
+
+  server.registerTool("git_status", {
+    description: "Read Git status for an active task worktree.", inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Git status", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "git_status", { projectId: input.projectId, taskId: input.taskId }, () => services.git.status(rootFor(services, input.projectId, input.taskId))));
+
+  server.registerTool("git_diff", {
+    description: "Read the bounded Git diff for an active task worktree.", inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Git diff", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "git_diff", { projectId: input.projectId, taskId: input.taskId }, () => services.git.diff(rootFor(services, input.projectId, input.taskId))));
+
+  server.registerTool("run_command", {
+    description: "Start an asynchronous command inside a constrained disposable container mounted only to the task worktree and artifacts. Network is disabled by default.",
+    inputSchema: RunCommandInput,
+    annotations: { title: "Run sandboxed command", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "run_command", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}), networked: input.network !== "none" }, async () => {
+    if (!input.taskId) throw new WorkspaceError("VALIDATION", "taskId is required for execution");
+    const project = services.projects.get(input.projectId);
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const timeoutSeconds = Math.min(input.timeoutSeconds ?? services.config.TASK_DEFAULT_TIMEOUT_SECONDS, services.config.TASK_MAX_TIMEOUT_SECONDS);
+    const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
+    return services.tasks.start({ worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path, image: input.image ?? defaultImage,
+      executable: input.executable, args: input.args, network: input.network,
+      limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS, timeoutSeconds, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
+    });
+  }));
+
+  server.registerTool("get_task", {
+    description: "Read persistent task state.", inputSchema: { taskId: TaskId },
+    annotations: { title: "Get task", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "get_task", { taskId: input.taskId }, () => services.tasks.get(input.taskId)));
+
+  server.registerTool("read_task_logs", {
+    description: "Read cursor-based redacted logs for a task.", inputSchema: { taskId: TaskId, cursor: z.number().int().min(0).default(0), maxBytes: z.number().int().min(1024).max(262144).default(65536) },
+    annotations: { title: "Read task logs", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "read_task_logs", { taskId: input.taskId }, () => services.tasks.logs(input.taskId, input.cursor, input.maxBytes)));
+
+  server.registerTool("cancel_task", {
+    description: "Cancel a running task and its complete container process tree.", inputSchema: { taskId: TaskId },
+    annotations: { title: "Cancel task", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "cancel_task", { taskId: input.taskId, destructive: true }, () => services.tasks.cancel(input.taskId)));
+
+  server.registerTool("list_artifacts", {
+    description: "List indexed task artifacts and hashes.", inputSchema: { taskId: TaskId },
+    annotations: { title: "List artifacts", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "list_artifacts", { taskId: input.taskId }, () => services.artifacts.list(input.taskId)));
+
+  server.registerTool("commit_task", {
+    description: "Stage and commit all task-worktree changes after explicit user approval. Does not push or merge.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId, message: z.string().min(1).max(500) },
+    annotations: { title: "Commit task", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "commit_task", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const commit = await services.git.commit(tree.path, input.message);
+    services.database.db.prepare("UPDATE worktrees SET status='committed' WHERE task_id=?").run(input.taskId);
+    return { commit, branch: tree.branch };
+  }));
+
+  server.registerTool("rollback_task", {
+    description: "Permanently discard an uncommitted task worktree and delete its task branch. Audit logs and artifacts remain.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Roll back task", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "rollback_task", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const task = services.database.db.prepare("SELECT status FROM tasks WHERE worktree_id=? AND status IN ('queued','preparing','running') LIMIT 1").get(input.taskId) as { status: string } | undefined;
+    if (task) throw new WorkspaceError("CONFLICT", "Stop active worktree tasks before rollback");
+    await services.git.discard(services.projects.get(input.projectId).canonicalPath, tree.path, tree.branch);
+    services.database.db.prepare("UPDATE worktrees SET status='discarded' WHERE task_id=?").run(input.taskId);
+    return { discarded: true, branch: tree.branch };
+  }));
+
+  return server;
+}

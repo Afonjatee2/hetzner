@@ -1,0 +1,27 @@
+[Unit]
+Description=Hetzner Dev Workspace MCP Gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gptdev
+Group=gptdev
+WorkingDirectory=/opt/hetzner-dev-workspace
+EnvironmentFile=/etc/gpt-dev/gateway.env
+ExecStart=/usr/bin/node apps/mcp-gateway/dist/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/gpt-hosted /var/lib/gpt-dev
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+
