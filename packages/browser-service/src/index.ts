@@ -96,6 +96,14 @@ async function dockerSucceeds(args: string[]): Promise<boolean> {
   });
 }
 
+let rootlessDocker: Promise<boolean> | undefined;
+
+function isRootlessDocker(): Promise<boolean> {
+  rootlessDocker ??= docker(["info", "--format", "{{json .SecurityOptions}}"])
+    .then((options) => options.includes("name=rootless"));
+  return rootlessDocker;
+}
+
 export class DevServerService {
   constructor(private readonly database: WorkspaceDatabase) {}
 
@@ -109,6 +117,9 @@ export class DevServerService {
     const networkName = `gptdev-preview-${input.worktreeId}`;
     const name = `gptdev-dev-${input.worktreeId}`;
     const workspace = await stat(input.worktreePath);
+    const rootless = await isRootlessDocker();
+    const uid = rootless ? 0 : workspace.uid;
+    const gid = rootless ? 0 : workspace.gid;
     await docker(["network", "create", "--internal", networkName], true);
     await docker(["rm", "--force", name], true);
     const containerId = await docker([
@@ -116,7 +127,7 @@ export class DevServerService {
       "--network", networkName, "--network-alias", "workspace.test",
       "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
       "--memory", "1g", "--cpus", "1", "--pids-limit", "128",
-      "--user", `${workspace.uid}:${workspace.gid}`, "--env", "HOME=/tmp", "--env", `PORT=${input.port}`,
+      "--user", `${uid}:${gid}`, "--env", "HOME=/tmp", "--env", `PORT=${input.port}`,
       "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m", "--workdir", "/workspace",
       "--mount", `type=bind,source=${input.worktreePath},target=/workspace`,
       input.image, input.executable, ...input.args

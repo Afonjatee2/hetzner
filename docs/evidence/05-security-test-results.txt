@@ -1,0 +1,16 @@
+Hetzner acceptance run: 2026-07-10
+
+PASS rootless Docker daemon reports name=rootless, seccomp and cgroupns
+PASS gateway service can access only its unprivileged rootless Docker socket
+PASS task container has no /var/run/docker.sock
+PASS task container has no /etc/gpt-dev
+PASS task container has no /root/.ssh
+PASS task network mode none blocks outbound HTTPS
+PASS browser task attaches only to its internal per-worktree preview network
+PASS task log secret redaction replaced the configured test secret
+PASS long-running task cancellation ended with status cancelled
+PASS worktree path traversal request was rejected
+PASS runner uses read-only rootfs, dropped capabilities, no-new-privileges,
+     memory/CPU/PID/output/time limits, and explicit bind mounts only
+
+No credentials, tokens or private keys are included in this record.

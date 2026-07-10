@@ -28,6 +28,12 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -t REGISTRY/gptdev
 
 Pin production image digests after verification.
 
+The service is designed for a rootless Docker daemon owned by `gptdev`. In that
+mode container UID 0 maps to the unprivileged host user; task containers still
+run with all capabilities dropped, `no-new-privileges`, a read-only rootfs and
+strict resource/mount/network limits. With a rootful development engine, the
+runner instead maps the worktree's host UID/GID into the container.
+
 ## 4. Cloudflare
 
 Create a new named tunnel and hostname such as `dev-mcp.remoteconnector.uk`. Use the provided configuration template, keep port 8081 closed publicly, and install cloudflared as a system service. Never copy the Windows tunnel credential.
@@ -41,4 +47,3 @@ sudo journalctl -u gpt-dev-gateway -n 100 --no-pager
 ```
 
 Connect a separate ChatGPT app named **Hetzner Dev Workspace** to the public `/mcp` endpoint. Test read tools, worktree creation, constrained execution, Playwright evidence, final diff, commit/rollback and reboot recovery before any approved project migration.
-

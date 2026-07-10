@@ -51,6 +51,14 @@ async function docker(args: string[], allowFailure = false): Promise<string> {
   });
 }
 
+let rootlessDocker: Promise<boolean> | undefined;
+
+function isRootlessDocker(): Promise<boolean> {
+  rootlessDocker ??= docker(["info", "--format", "{{json .SecurityOptions}}"])
+    .then((options) => options.includes("name=rootless"));
+  return rootlessDocker;
+}
+
 export class DockerSandboxRunner {
   private readonly active = new Map<string, string>();
 
@@ -70,8 +78,12 @@ export class DockerSandboxRunner {
       throw new WorkspaceError("FORBIDDEN", "Restricted networking requires a task-specific preview network");
     }
     const workspaceStat = await stat(request.worktreePath);
-    const uid = typeof workspaceStat.uid === "number" ? workspaceStat.uid : 1000;
-    const gid = typeof workspaceStat.gid === "number" ? workspaceStat.gid : 1000;
+    // In rootless Docker, container UID 0 maps to the unprivileged daemon user
+    // that owns the bind-mounted worktree. A host UID passed through literally
+    // maps to a subordinate UID and cannot read mode-0640 workspace files.
+    const rootless = await isRootlessDocker();
+    const uid = rootless ? 0 : typeof workspaceStat.uid === "number" ? workspaceStat.uid : 1000;
+    const gid = rootless ? 0 : typeof workspaceStat.gid === "number" ? workspaceStat.gid : 1000;
     const name = `gptdev-${request.taskId}`;
     const createArgs = [
       "create", "--name", name,

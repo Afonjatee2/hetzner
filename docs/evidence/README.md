@@ -13,4 +13,9 @@ Store redacted acceptance evidence here:
 - `08-final-acceptance-checklist.md`
 - `09-final-service-versions.md`
 
+Current automated evidence also includes:
+
+- `hetzner-playwright.png`
+- `hetzner-browser-events.json`
+
 Never store secrets or private keys in the evidence pack.
