@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -12,6 +12,11 @@ import { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
 import { TaskService } from "@gpt-dev/task-service";
 import { AuthService } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { loadOrCreateSigningKey } from "./oauth/keys.js";
+import { LoginRateLimiter } from "./oauth/login.js";
+import { OAuthProvider } from "./oauth/provider.js";
+import { registerOAuthRoutes } from "./oauth/routes.js";
+import { OAuthStore } from "./oauth/store.js";
 import { createMcpServer } from "./tools.js";
 
 const config = loadConfig();
@@ -25,8 +30,26 @@ const browser = new BrowserService();
 const devServers = new DevServerService(database);
 const interrupted = tasks.reconcileInterrupted();
 const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers };
-const auth = new AuthService(config);
-const app = Fastify({ logger: { level: config.NODE_ENV === "production" ? "info" : "debug", redact: ["req.headers.authorization"] }, trustProxy: true, bodyLimit: 2_000_000 });
+const firstPartySigningKey = config.AUTH_MODE === "first-party" ? await loadOrCreateSigningKey(config.signingKeyPath) : undefined;
+const auth = new AuthService(config, firstPartySigningKey ? [firstPartySigningKey] : undefined);
+// Only trust X-Forwarded-For from loopback: cloudflared (or any local reverse
+// proxy) always connects over 127.0.0.1/::1, so this is the only hop allowed to
+// set the client IP. `trustProxy: true` would let a remote client spoof
+// request.ip via an arbitrary X-Forwarded-For header, defeating both the
+// development loopback check and the OAuth login rate limiter.
+const app = Fastify({
+  logger: { level: config.NODE_ENV === "production" ? "info" : "debug", redact: ["req.headers.authorization"] },
+  trustProxy: ["127.0.0.1", "::1"],
+  bodyLimit: 2_000_000
+});
+
+if (config.AUTH_MODE === "first-party" && firstPartySigningKey) {
+  const store = new OAuthStore(database.db);
+  const provider = new OAuthProvider({ config, store, signingKey: firstPartySigningKey, database });
+  registerOAuthRoutes(app, { config, database, provider, signingKey: firstPartySigningKey, csrfSecret: randomBytes(32), rateLimiter: new LoginRateLimiter() });
+  const purgeInterval = setInterval(() => store.purgeExpired(), 5 * 60_000);
+  purgeInterval.unref();
+}
 
 interface Session { server: McpServer; transport: StreamableHTTPServerTransport }
 const sessions = new Map<string, Session>();
@@ -40,7 +63,11 @@ app.all(config.MCP_PATH, async (request, reply) => {
     await auth.authenticate(request, ["workspace.read"]);
   } catch (error) {
     const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 401;
-    reply.header("WWW-Authenticate", `Bearer resource_metadata="${config.PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`);
+    const resourceMetadata = `${config.PUBLIC_BASE_URL}/.well-known/oauth-protected-resource`;
+    const wwwAuthenticate = statusCode === 403
+      ? `Bearer error="insufficient_scope", scope="workspace.read", resource_metadata="${resourceMetadata}"`
+      : `Bearer scope="workspace.read", resource_metadata="${resourceMetadata}"`;
+    reply.header("WWW-Authenticate", wwwAuthenticate);
     return reply.code(statusCode).send({ error: error instanceof Error ? error.message : "Unauthorized" });
   }
 

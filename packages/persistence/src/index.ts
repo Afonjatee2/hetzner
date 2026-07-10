@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import type { AuditEvent } from "@gpt-dev/audit-service";
@@ -13,6 +13,16 @@ export class WorkspaceDatabase {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();
+    // The database holds OAuth refresh-token hashes and short-lived plaintext
+    // token-response replay caches; keep the main file and its WAL/SHM
+    // sidecars owner-only regardless of the process umask.
+    for (const file of [absolute, `${absolute}-wal`, `${absolute}-shm`]) {
+      try {
+        chmodSync(file, 0o600);
+      } catch {
+        // sidecar file may not exist yet on this platform/journal mode
+      }
+    }
   }
 
   private migrate(): void {
@@ -94,9 +104,44 @@ export class WorkspaceDatabase {
         networked INTEGER NOT NULL,
         detail_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS oauth_clients (
+        id TEXT PRIMARY KEY,
+        client_name TEXT,
+        redirect_uris_json TEXT NOT NULL,
+        token_endpoint_auth_method TEXT NOT NULL DEFAULT 'none',
+        scope TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+        code_hash TEXT PRIMARY KEY,
+        client_id TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        resource TEXT,
+        code_challenge TEXT NOT NULL,
+        code_challenge_method TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_at TEXT,
+        token_response_json TEXT
+      );
+      CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+        token_hash TEXT PRIMARY KEY,
+        family_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        resource TEXT,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        rotated_at TEXT,
+        rotation_response_json TEXT,
+        revoked_at TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
       CREATE INDEX IF NOT EXISTS idx_task_logs_task_sequence ON task_logs(task_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_events(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_oauth_refresh_family ON oauth_refresh_tokens(family_id);
+      CREATE INDEX IF NOT EXISTS idx_oauth_codes_expires ON oauth_authorization_codes(expires_at);
     `);
   }
 

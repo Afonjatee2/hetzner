@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createLocalJWKSet, createRemoteJWKSet, jwtVerify } from "jose";
 import type { Config } from "./config.js";
+import { buildJwks, type SigningKey } from "./oauth/keys.js";
 
 export interface Principal {
   subject: string;
@@ -10,8 +11,12 @@ export interface Principal {
 export class AuthService {
   private readonly jwks;
 
-  constructor(private readonly config: Config) {
-    this.jwks = config.OAUTH_JWKS_URI ? createRemoteJWKSet(new URL(config.OAUTH_JWKS_URI)) : undefined;
+  constructor(private readonly config: Config, firstPartyKeys?: SigningKey[]) {
+    if (config.AUTH_MODE === "first-party" && firstPartyKeys && firstPartyKeys.length > 0) {
+      this.jwks = createLocalJWKSet(buildJwks(firstPartyKeys));
+    } else {
+      this.jwks = config.OAUTH_JWKS_URI ? createRemoteJWKSet(new URL(config.OAUTH_JWKS_URI)) : undefined;
+    }
   }
 
   async authenticate(request: FastifyRequest, requiredScopes: string[] = []): Promise<Principal> {
@@ -22,12 +27,12 @@ export class AuthService {
     }
     const header = request.headers.authorization;
     if (!header?.startsWith("Bearer ")) throw Object.assign(new Error("Bearer token required"), { statusCode: 401 });
-    if (!this.jwks || !this.config.OAUTH_ISSUER || !this.config.OAUTH_AUDIENCE) throw new Error("OAuth verifier is not configured");
+    if (!this.jwks || !this.config.oauthIssuer || !this.config.oauthAudience) throw new Error("OAuth verifier is not configured");
     const token = header.slice("Bearer ".length);
     const { payload } = await jwtVerify(token, this.jwks, {
-      issuer: this.config.OAUTH_ISSUER,
-      audience: this.config.OAUTH_AUDIENCE,
-      algorithms: ["RS256", "ES256", "EdDSA"]
+      issuer: this.config.oauthIssuer,
+      audience: this.config.oauthAudience,
+      algorithms: this.config.AUTH_MODE === "first-party" ? ["ES256"] : ["RS256", "ES256", "EdDSA"]
     });
     const scopes = typeof payload.scope === "string"
       ? payload.scope.split(/\s+/).filter(Boolean)
@@ -41,11 +46,9 @@ export class AuthService {
   protectedResourceMetadata() {
     return {
       resource: `${this.config.PUBLIC_BASE_URL}${this.config.MCP_PATH}`,
-      authorization_servers: this.config.OAUTH_ISSUER ? [this.config.OAUTH_ISSUER] : [],
+      authorization_servers: this.config.oauthIssuer ? [this.config.oauthIssuer] : [],
       bearer_methods_supported: ["header"],
-      scopes_supported: ["workspace.read", "workspace.write", "task.execute", "task.network"],
-      resource_documentation: `${this.config.PUBLIC_BASE_URL}/docs/authentication`
+      scopes_supported: ["workspace.read", "workspace.write", "task.execute", "task.network"]
     };
   }
 }
-

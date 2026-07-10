@@ -10,7 +10,29 @@ Run `infra/scripts/preflight.sh` and save output to `docs/evidence/00-discovery.
 
 Clone the private repository to `/opt/hetzner-dev-workspace`, run `pnpm install --frozen-lockfile && pnpm build`, then run `sudo infra/scripts/install-hetzner.sh`. Put secrets only in `/etc/gpt-dev/gateway.env` with owner `root:gptdev` and mode `0640` or stricter.
 
-Required production values include `NODE_ENV=production`, `AUTH_MODE=oauth`, `PUBLIC_BASE_URL`, `OAUTH_ISSUER`, `OAUTH_AUDIENCE` and `OAUTH_JWKS_URI`.
+Required production values include `NODE_ENV=production`, `AUTH_MODE=oauth`, `PUBLIC_BASE_URL`, `OAUTH_ISSUER`, `OAUTH_AUDIENCE` and `OAUTH_JWKS_URI` when using an external authorization server.
+
+### First-party authorization server
+
+To let ChatGPT connect without standing up a separate OAuth provider, set `AUTH_MODE=first-party` instead. Required production values:
+
+```
+NODE_ENV=production
+AUTH_MODE=first-party
+PUBLIC_BASE_URL=https://dev-mcp.remoteconnector.uk
+OAUTH_OPERATOR_PASSWORD_HASH=scrypt:N=16384,r=8,p=1:<salt>:<hash>
+OAUTH_SIGNING_KEY_PATH=/var/lib/gpt-dev/oauth-signing-key.pem
+```
+
+Issuer, audience and the JWKS document are derived automatically from `PUBLIC_BASE_URL` and `MCP_PATH`; do not set `OAUTH_ISSUER`, `OAUTH_AUDIENCE` or `OAUTH_JWKS_URI` in this mode.
+
+Generate the operator password hash with the bundled CLI, which reads the password from stdin (never from argv or shell history):
+
+```bash
+printf '%s' 'your-strong-password' | pnpm exec tsx apps/mcp-gateway/src/oauth/hash-password.ts
+```
+
+Paste the resulting `scrypt:...` string into `OAUTH_OPERATOR_PASSWORD_HASH` in `/etc/gpt-dev/gateway.env`. The ES256 signing key is generated automatically on first boot at `OAUTH_SIGNING_KEY_PATH`; ensure the parent directory is owned by `gptdev` and the key file is mode `0600` (the gateway creates it this way itself, but confirm after the first start and after any manual copy between hosts).
 
 ## 3. Images
 
