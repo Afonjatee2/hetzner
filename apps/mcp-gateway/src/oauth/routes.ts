@@ -33,6 +33,16 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
   // In first-party mode (the only mode these routes are registered) oauthIssuer
   // is always derived from PUBLIC_BASE_URL; fall back to "" to satisfy the type.
   const issuer = config.oauthIssuer ?? "";
+  const gatewayDisplayName = config.GATEWAY_NAME.split("-")
+    .map((part) => part.length > 0 ? part[0]?.toUpperCase() + part.slice(1) : part)
+    .join(" ");
+
+  app.addHook("onRequest", async (request, reply) => {
+    if (request.url.startsWith("/oauth/") || request.url.startsWith("/.well-known/")) {
+      reply.header("Cache-Control", "no-store");
+      reply.header("Pragma", "no-cache");
+    }
+  });
 
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
     try {
@@ -71,7 +81,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       return reply.code(302).header("Location", target.toString()).send();
     }
     const csrfToken = createCsrfToken(csrfSecret);
-    const html = renderLoginPage({ ...outcome.request }, csrfToken);
+    const html = renderLoginPage({ ...outcome.request }, csrfToken, gatewayDisplayName);
     reply.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'");
     return reply.type("text/html").send(html);
   });
@@ -122,7 +132,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       if (rateLimiter.isGlobalSurgeDetected()) {
         database.recordAudit(createAuditEvent({ action: "oauth.login.global_failure_surge", actor: "oauth-provider", destructive: false, networked: false, detail: {} }));
       }
-      const html = renderLoginPage({ ...outcome.request, error: csrfValid ? "Incorrect password" : "Session expired, please try again" }, createCsrfToken(csrfSecret));
+      const html = renderLoginPage({ ...outcome.request, error: csrfValid ? "Incorrect password" : "Session expired, please try again" }, createCsrfToken(csrfSecret), gatewayDisplayName);
       return reply.code(csrfValid ? 401 : 400).type("text/html").send(html);
     }
 
@@ -131,6 +141,18 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     target.searchParams.set("code", code);
     if (outcome.request.state !== undefined) target.searchParams.set("state", outcome.request.state);
     target.searchParams.set("iss", issuer);
+    request.log.info({
+      event: "oauth.authorization.redirect",
+      status: 303,
+      redirectHost: target.hostname,
+      redirectPath: target.pathname,
+      hasCode: true,
+      hasState: outcome.request.state !== undefined,
+      hasIssuer: true,
+      hasResource: outcome.request.resource !== undefined,
+      hasPkce: Boolean(outcome.request.codeChallenge),
+      clientIdType: outcome.request.clientId.startsWith("https://") ? "metadata_document" : "dynamic"
+    }, "OAuth authorization response issued");
     return reply.code(303).header("Location", target.toString()).send();
   });
 
@@ -141,6 +163,19 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     if (result.headers) {
       for (const [key, value] of Object.entries(result.headers)) reply.header(key, value);
     }
+    const responseBody = result.body as { error?: unknown } | undefined;
+    request.log.info({
+      event: "oauth.token.request",
+      status: result.status,
+      grantType: body.grant_type === "authorization_code" || body.grant_type === "refresh_token" ? body.grant_type : "unsupported",
+      hasCode: Boolean(body.code),
+      hasClientId: Boolean(body.client_id),
+      hasRedirectUri: Boolean(body.redirect_uri),
+      hasResource: Boolean(body.resource),
+      hasCodeVerifier: Boolean(body.code_verifier),
+      clientIdType: body.client_id?.startsWith("https://") ? "metadata_document" : body.client_id ? "dynamic" : "missing",
+      oauthError: typeof responseBody?.error === "string" ? responseBody.error : undefined
+    }, "OAuth token request handled");
     return reply.code(result.status).send(result.body);
   });
 }

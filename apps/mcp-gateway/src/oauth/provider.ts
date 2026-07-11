@@ -12,7 +12,11 @@ import type { OAuthStore, RefreshTokenRecord } from "./store.js";
 
 export const SUPPORTED_SCOPES = ["workspace.read", "workspace.write", "task.execute", "task.network"] as const;
 
-const CODE_TTL_MS = 120_000;
+// OAuth recommends authorization codes expire shortly after issuance, with a
+// maximum lifetime of 10 minutes. ChatGPT may complete its browser callback
+// several minutes before its backend redeems the code, so a two-minute window
+// causes valid interactive flows to fail with invalid_grant.
+const CODE_TTL_MS = 10 * 60_000;
 const REFRESH_GRACE_MS = 60_000;
 
 export interface ProviderDeps {

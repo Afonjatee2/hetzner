@@ -76,6 +76,23 @@ describe("LoginRateLimiter", () => {
 });
 
 describe("renderLoginPage", () => {
+  it("uses and escapes the configured gateway display name", () => {
+    const html = renderLoginPage(
+      {
+        clientId: "client-1",
+        redirectUri: "https://chatgpt.com/connector_platform_oauth_redirect",
+        scope: "workspace.read",
+        codeChallenge: "x".repeat(43),
+        codeChallengeMethod: "S256",
+        responseType: "code"
+      },
+      "token",
+      "Mac Project Files"
+    );
+    expect(html).toContain("<h1>Mac Project Files</h1>");
+    expect(html).toContain("<title>Sign in - Mac Project Files</title>");
+  });
+
   it("escapes XSS attempts in the state parameter", () => {
     const html = renderLoginPage(
       {

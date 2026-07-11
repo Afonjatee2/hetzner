@@ -85,14 +85,14 @@ export interface LoginFormParams {
   error?: string;
 }
 
-export function renderLoginPage(params: LoginFormParams, csrfToken: string): string {
+export function renderLoginPage(params: LoginFormParams, csrfToken: string, gatewayName = "Hetzner Dev Workspace"): string {
   const hidden = (name: string, value: string | undefined): string =>
     value !== undefined ? `<input type="hidden" name="${name}" value="${escapeHtml(value)}">` : "";
   return `<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Sign in - Hetzner Dev Workspace</title></head>
+<head><meta charset="utf-8"><title>Sign in - ${escapeHtml(gatewayName)}</title></head>
 <body>
-<h1>Hetzner Dev Workspace</h1>
+<h1>${escapeHtml(gatewayName)}</h1>
 ${params.error ? `<p class="error">${escapeHtml(params.error)}</p>` : ""}
 <form method="post" action="/oauth/authorize">
 ${hidden("client_id", params.clientId)}

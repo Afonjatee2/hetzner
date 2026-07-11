@@ -49,7 +49,24 @@ const auth = new AuthService(config, firstPartySigningKey ? [firstPartySigningKe
 // request.ip via an arbitrary X-Forwarded-For header, defeating both the
 // development loopback check and the OAuth login rate limiter.
 const app = Fastify({
-  logger: { level: config.NODE_ENV === "production" ? "info" : "debug", redact: ["req.headers.authorization"] },
+  logger: {
+    level: config.NODE_ENV === "production" ? "info" : "debug",
+    redact: ["req.headers.authorization"],
+    serializers: {
+      // Authorization query strings contain state and PKCE challenges. Keep the
+      // route visible for operations while ensuring those values never reach
+      // request logs.
+      req(request) {
+        const url = request.url.split("?", 1)[0] ?? request.url;
+        return {
+          method: request.method,
+          url,
+          host: request.headers.host ?? "",
+          remoteAddress: request.ip
+        };
+      }
+    }
+  },
   trustProxy: ["127.0.0.1", "::1"],
   bodyLimit: 2_000_000
 });

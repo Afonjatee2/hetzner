@@ -184,6 +184,25 @@ describe("prepareAuthorize", () => {
 });
 
 describe("authorization_code grant", () => {
+  it("allows ChatGPT-style delayed redemption within ten minutes", async () => {
+    const { provider, advance } = await setup();
+    const clientId = registerClient(provider);
+    const { code, verifier, request } = await fullAuthorize(provider, clientId);
+    advance(4 * 60_000);
+    const result = await provider.handleTokenRequest(tokenBody(request, code, verifier, clientId));
+    expect(result.status).toBe(200);
+  });
+
+  it("rejects redemption after ten minutes", async () => {
+    const { provider, advance } = await setup();
+    const clientId = registerClient(provider);
+    const { code, verifier, request } = await fullAuthorize(provider, clientId);
+    advance(10 * 60_000 + 1);
+    const result = await provider.handleTokenRequest(tokenBody(request, code, verifier, clientId));
+    expect(result.status).toBe(400);
+    expect(body(result).error).toBe("invalid_grant");
+  });
+
   it("issues a verifiable access token with the expected claims", async () => {
     const { provider, signingKey, config } = await setup();
     const clientId = registerClient(provider);

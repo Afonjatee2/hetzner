@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, scryptSync } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -140,6 +140,12 @@ async function waitForServer(deadlineMs) {
 
 async function main() {
   const dir = await mkdtemp(join(tmpdir(), "gptdev-oauth-e2e-"));
+  await Promise.all([
+    mkdir(join(dir, "workspaces"), { recursive: true }),
+    mkdir(join(dir, "worktrees"), { recursive: true }),
+    mkdir(join(dir, "state"), { recursive: true }),
+    mkdir(join(dir, "artifacts"), { recursive: true })
+  ]);
   const env = {
     ...process.env,
     NODE_ENV: "test",
@@ -294,6 +300,12 @@ async function main() {
       if (res.status === 429) sawRateLimit = true;
     }
     assert(sawRateLimit, "expected a 429 after repeated failed login attempts");
+
+    assert(!output.includes(OPERATOR_PASSWORD), "operator password must not appear in logs");
+    assert(!output.includes(accessToken), "access token must not appear in logs");
+    assert(!output.includes(refreshToken), "refresh token must not appear in logs");
+    assert(!output.includes(authParams.state), "OAuth state must not appear in logs");
+    assert(!output.includes(authParams.code_challenge), "PKCE challenge must not appear in logs");
 
     console.log(JSON.stringify({ ok: true, clientId }, null, 2));
   } catch (error) {
