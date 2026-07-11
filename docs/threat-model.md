@@ -11,7 +11,7 @@ Assets include source code, Git history, OAuth/tunnel credentials, VPS integrity
 - **Malicious repository:** task execution is disposable, non-root, capability-free, no-new-privileges, resource-bounded and networkless by default. Only the task worktree and artifact directory are mounted.
 - **Credential theft:** task containers receive no engine socket, SSH agent, home directory, `/etc/gpt-dev`, environment secrets or host root. Common secret forms are redacted from logs.
 - **Denial of service:** every task has CPU, memory, PID, timeout and output limits. Tree, search, file, diff and log operations are bounded.
-- **Operator error:** all changes occur in a task branch/worktree; final diff is reviewable; rollback discards the worktree; commit and rollback are destructive MCP tools.
+- **Operator error:** source changes occur in a task branch/worktree; final diff is reviewable; rollback discards the worktree; and canonical promotion is limited to explicit clean fast-forwards with no force-push.
 - **Container breakout:** rootless Docker is preferred. Kernel and engine patching remains necessary; container isolation is not equivalent to a VM boundary.
 - **Prompt injection in repository files:** repository content is untrusted data. Tool permissions and hard containment rules do not change based on file instructions.
 - **First-party login brute force:** the operator password is stored only as a scrypt hash (`N=16384,r=8,p=1`) and compared with a constant-time check. Login attempts are rate-limited both per IP and globally (in-memory, 15-minute window) and blocked with `429` once exceeded.

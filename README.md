@@ -29,8 +29,8 @@ OrbStack is a local engine only. Production uses Docker Engine or Podman on Hetz
 
 - Production refuses to start without OAuth/JWKS configuration.
 - Development authentication is accepted only from loopback.
-- Canonical Git checkouts are read-only to MCP mutation tools.
-- Every mutation targets an isolated task worktree.
+- Canonical Git checkouts reject arbitrary writes; only explicit clean fast-forward publish/sync operations may update the configured default branch.
+- Source edits, deletes and command execution target isolated task worktrees.
 - Task containers have no network by default, a read-only root filesystem, all capabilities dropped, `no-new-privileges`, PID/CPU/memory/time/output limits, and only worktree/artifact mounts.
 - Task containers never receive the Docker/Podman socket, home directories, SSH agents, secrets, or host configuration.
 - Logs are redacted and stored with cursor-based access.
@@ -38,3 +38,4 @@ OrbStack is a local engine only. Production uses Docker Engine or Podman on Hetz
 See [architecture](docs/architecture.md), [deployment](docs/deployment.md), [operations](docs/operations.md), [recovery](docs/recovery.md), and the [threat model](docs/threat-model.md).
 
 For continuation from ChatGPT Web against selected projects on the Mac, see the separate [Mac Project Files connector](docs/mac-project-files.md). It uses Git bundles and a restricted SSH receiver to hand committed task branches to the Hetzner sandbox without exposing the rest of the Mac filesystem.
+ The same connector can publish an approved tested branch and keep the real local folder current without manual merge or pull commands.

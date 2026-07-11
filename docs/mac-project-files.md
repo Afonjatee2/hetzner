@@ -6,7 +6,7 @@ This is a separate ChatGPT MCP connector for projects physically stored on the M
 
 Set `WORKSPACE_ROOT` to the narrowest useful parent, normally the user's `Downloads` directory. A folder is not readable merely because it is below that root: it must also be an explicitly registered Git checkout. Registration outside the root is rejected by canonical realpath comparison.
 
-File tools exclude `.git`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.env` variants, package-manager authentication files and private-key formats. Mutations occur only in task worktrees, never in the canonical checkout.
+File tools exclude `.git`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.env` variants, package-manager authentication files and private-key formats. Arbitrary file mutations occur only in task worktrees. The canonical checkout changes only through explicit clean fast-forward `publish_task` or `sync_project` operations.
 
 ## Mac installation
 
@@ -34,11 +34,13 @@ File tools exclude `.git`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.env` variants, p
 
 ## Handoff workflow
 
-1. Register the local Git project and create a task worktree.
-2. Read/edit the worktree through the Mac connector.
-3. Inspect `git_diff`, then call `commit_task` only after explicit approval.
-4. Call `send_handoff_to_hetzner`. It creates a Git bundle for the clean branch and streams it through a dedicated forced-command SSH identity. The identity cannot open a shell, forward ports, or choose another destination.
-5. On the Hetzner connector, call `list_incoming_handoffs`, then `import_handoff`.
-6. Create a Hetzner task worktree and run tests/Playwright in the existing rootless container sandbox.
+The normal ChatGPT workflow is now deliberately short:
 
-The handoff carries Git objects only. Ignored local files, `.env` files, credentials, package caches and build output are not included.
+1. Edit the registered Mac project in an isolated task worktree.
+2. Send the committed branch to Hetzner and run the required tests or Playwright checks there.
+3. After explicit approval, call `publish_task` on the Mac connector. It publishes the exact committed branch that was tested, pushes the unique task branch, fast-forwards `origin/main`, and fast-forwards the real local project folder. It never force-pushes and stops if either checkout is dirty or has diverged.
+4. Call `sync_project` whenever another trusted device has updated `origin/main`. It only fast-forwards a clean local checkout on its configured default branch.
+
+This means the user does not need to copy commands, merge branches manually, or pull the finished code back into Downloads. GitHub remains the shared source of truth, while the Mac connector keeps the real local project current.
+
+For recovery or review, the lower-level tools remain available: `commit_task`, `send_handoff_to_hetzner`, `list_incoming_handoffs`, and `import_handoff`. The handoff carries Git objects only. Ignored local files, `.env` files, credentials, package caches and build output are not included.

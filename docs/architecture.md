@@ -16,7 +16,7 @@ The browser device is only the user interface. Canonical repositories, worktrees
 
 The gateway uses native MCP Streamable HTTP at `/mcp`. Each client session receives an SDK transport and independently registered tool server. OAuth access tokens are verified against the configured JWKS, issuer and audience. The protected-resource metadata endpoints are exposed at both `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
 
-Canonical checkouts are registered in SQLite. Read tools may target a canonical checkout; write, delete, execute, commit and rollback operations require an active worktree. Paths are resolved through `realpath` after symlinks and must remain below the registered root.
+Canonical checkouts are registered in SQLite. Read tools may target a canonical checkout; arbitrary write, delete, execute, commit and rollback operations require an active worktree. The only canonical mutations are explicit `publish_task` and `sync_project` fast-forwards on a clean configured default branch. Paths are resolved through `realpath` after symlinks and must remain below the registered root.
 
 Tasks are created in SQLite before execution and move through `queued -> preparing -> running -> terminal`. Non-terminal tasks found after a gateway restart become `interrupted`. Output is redacted and stored as ordered chunks. Container IDs, exit codes, timestamps and artifacts remain queryable.
 

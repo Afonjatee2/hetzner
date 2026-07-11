@@ -6,6 +6,11 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates git ripgrep
+rm -rf /var/lib/apt/lists/*
+
 id gptdev >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin gptdev
 install -d -o gptdev -g gptdev -m 0750 /opt/hetzner-dev-workspace
 install -d -o gptdev -g gptdev -m 0750 /srv/gpt-hosted /srv/gpt-hosted/.worktrees /var/lib/gpt-dev /var/lib/gpt-dev/tasks /var/lib/gpt-dev/docker-config /var/lib/gpt-dev/handoffs

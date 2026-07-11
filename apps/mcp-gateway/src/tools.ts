@@ -29,12 +29,17 @@ export interface Services {
 
 interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
 
-function worktree(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
+function worktreeRecord(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
   const row = database.db.prepare(`
     SELECT task_id AS taskId, project_id AS projectId, path, branch, status, created_at AS createdAt
     FROM worktrees WHERE task_id=? AND project_id=?
   `).get(taskId, projectId) as WorktreeRecord | undefined;
   if (!row) throw new WorkspaceError("NOT_FOUND", "Task worktree not found for project");
+  return row;
+}
+
+function worktree(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
+  const row = worktreeRecord(database, projectId, taskId);
   if (row.status !== "active") throw new WorkspaceError("CONFLICT", `Worktree is ${row.status}`);
   return row;
 }
@@ -268,6 +273,29 @@ export function createMcpServer(services: Services): McpServer {
       network: "restricted", networkName: devServer.networkName,
       limits: { memory: "2g", cpus: 1, pids: 256, timeoutSeconds: 120, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
     });
+  }));
+
+  server.registerTool("sync_project", {
+    description: "Fast-forward a clean canonical project checkout from its fixed origin/default branch. Rejects dirty folders, branch changes and non-fast-forward updates.",
+    inputSchema: { projectId: ProjectId },
+    annotations: { title: "Sync project", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+  }, async (input) => safely(services, "sync_project", { projectId: input.projectId, destructive: true, networked: true }, async () => {
+    const project = services.projects.get(input.projectId);
+    return services.git.sync(project.canonicalPath, project.defaultBranch);
+  }));
+
+  server.registerTool("publish_task", {
+    description: "After explicit approval, publish an already committed and tested task by pushing its unique branch, fast-forwarding the fixed origin/default branch, and updating the canonical checkout. Never force-pushes.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Publish task", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+  }, async (input) => safely(services, "publish_task", { projectId: input.projectId, taskId: input.taskId, destructive: true, networked: true }, async () => {
+    const tree = worktreeRecord(services.database, input.projectId, input.taskId);
+    if (tree.status !== "committed") throw new WorkspaceError("CONFLICT", "Only an already committed and tested task can be published");
+    const project = services.projects.get(input.projectId);
+    const commit = await services.git.head(tree.path);
+    const published = await services.git.promote(project.canonicalPath, tree.path, tree.branch, project.defaultBranch);
+    services.database.db.prepare("UPDATE worktrees SET status='published' WHERE task_id=?").run(input.taskId);
+    return { commit, ...published };
   }));
 
   server.registerTool("commit_task", {

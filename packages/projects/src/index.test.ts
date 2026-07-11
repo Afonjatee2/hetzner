@@ -34,6 +34,9 @@ describe("ProjectService security boundary", () => {
     expect(isProtectedPath("deploy/private.pem")).toBe(true);
     expect(isProtectedPath(".aws/credentials")).toBe(true);
     expect(isProtectedPath(".env.example")).toBe(false);
+    expect(isProtectedPath(".env.mac.example")).toBe(false);
+    expect(isProtectedPath("config/.env.production.example")).toBe(false);
+    expect(isProtectedPath("config/.env.production")).toBe(true);
     expect(isProtectedPath("src/config.ts")).toBe(false);
   });
 });

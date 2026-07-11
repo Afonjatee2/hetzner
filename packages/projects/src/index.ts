@@ -27,7 +27,8 @@ export function isProtectedPath(requested: string): boolean {
   const parts = requested.replaceAll("\\", "/").split("/").filter((part) => part && part !== ".");
   if (parts.some((part) => PROTECTED_DIRECTORIES.has(part))) return true;
   const name = parts.at(-1)?.toLowerCase() ?? "";
-  if (name === ".env" || (name.startsWith(".env.") && name !== ".env.example")) return true;
+  const safeEnvExample = /^\.env(?:\.[a-z0-9_-]+)*\.example$/i.test(name);
+  if ((name === ".env" || name.startsWith(".env.")) && !safeEnvExample) return true;
   if (PROTECTED_FILES.has(name)) return true;
   return /\.(?:pem|key|p12|pfx)$/i.test(name);
 }
@@ -173,7 +174,8 @@ export class ProjectService {
       const child = spawn("rg", [
         "--line-number", "--color", "never", "--max-count", String(maxResults),
         "--glob", "!.git/**", "--glob", "!.ssh/**", "--glob", "!.aws/**", "--glob", "!.gnupg/**", "--glob", "!.kube/**",
-        "--glob", "!.env", "--glob", "!.env.*", "--glob", "!.npmrc", "--glob", "!*.pem", "--glob", "!*.key", "--glob", "!*.p12", "--glob", "!*.pfx",
+        "--glob", "!.env", "--glob", "!.env.*", "--glob", ".env.example", "--glob", ".env.*.example",
+        "--glob", "!.npmrc", "--glob", "!*.pem", "--glob", "!*.key", "--glob", "!*.p12", "--glob", "!*.pfx",
         "--", pattern, "."
       ], {
         cwd: root,
