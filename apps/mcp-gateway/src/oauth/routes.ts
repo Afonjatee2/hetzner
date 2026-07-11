@@ -16,16 +16,23 @@ export interface OAuthRoutesDeps {
   rateLimiter: LoginRateLimiter;
 }
 
-function redirectWithError(redirectUri: string, error: string, description?: string, state?: string): URL {
+// RFC 9207: every authorization response (success and error) must carry the
+// issuer identifier so strict OAuth 2.1 clients (e.g. ChatGPT) can validate it.
+// The value must byte-for-byte equal the `issuer` field in the AS metadata.
+function redirectWithError(redirectUri: string, error: string, issuer: string, description?: string, state?: string): URL {
   const target = new URL(redirectUri);
   target.searchParams.set("error", error);
   if (description) target.searchParams.set("error_description", description);
   if (state !== undefined) target.searchParams.set("state", state);
+  target.searchParams.set("iss", issuer);
   return target;
 }
 
 export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps): void {
   const { config, database, provider, signingKey, csrfSecret, rateLimiter } = deps;
+  // In first-party mode (the only mode these routes are registered) oauthIssuer
+  // is always derived from PUBLIC_BASE_URL; fall back to "" to satisfy the type.
+  const issuer = config.oauthIssuer ?? "";
 
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
     try {
@@ -60,7 +67,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       return reply.code(outcome.status).type("text/html").send(outcome.html);
     }
     if (outcome.kind === "redirect_error") {
-      const target = redirectWithError(outcome.redirectUri, outcome.error, outcome.description, outcome.state);
+      const target = redirectWithError(outcome.redirectUri, outcome.error, issuer, outcome.description, outcome.state);
       return reply.code(302).header("Location", target.toString()).send();
     }
     const csrfToken = createCsrfToken(csrfSecret);
@@ -89,8 +96,10 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       return reply.code(outcome.status).type("text/html").send(outcome.html);
     }
     if (outcome.kind === "redirect_error") {
-      const target = redirectWithError(outcome.redirectUri, outcome.error, outcome.description, outcome.state);
-      return reply.code(302).header("Location", target.toString()).send();
+      const target = redirectWithError(outcome.redirectUri, outcome.error, issuer, outcome.description, outcome.state);
+      // A POST authorization response must unambiguously continue as GET.
+      // Unlike 302, 303 cannot preserve and replay the password form POST.
+      return reply.code(303).header("Location", target.toString()).send();
     }
 
     // isBlocked is a cheap, per-IP-only, read-only check consulted before the
@@ -121,7 +130,8 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     const target = new URL(outcome.request.redirectUri);
     target.searchParams.set("code", code);
     if (outcome.request.state !== undefined) target.searchParams.set("state", outcome.request.state);
-    return reply.code(302).header("Location", target.toString()).send();
+    target.searchParams.set("iss", issuer);
+    return reply.code(303).header("Location", target.toString()).send();
   });
 
   app.post("/oauth/token", async (request, reply) => {

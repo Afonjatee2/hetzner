@@ -43,6 +43,20 @@ const app = Fastify({
   bodyLimit: 2_000_000
 });
 
+// Fallback body parser for any Content-Type Fastify has no registered parser
+// for. MCP clients (e.g. the ChatGPT connector) POST the JSON-RPC body with a
+// Content-Type that is not application/json; without this, Fastify rejects the
+// request with 415 before it reaches the /mcp handler, so the client never
+// receives the 401 auth challenge or a valid MCP response and cannot establish
+// a session. Specific parsers (application/json, x-www-form-urlencoded) still
+// take precedence; this only catches otherwise-unhandled types.
+app.addContentTypeParser("*", { parseAs: "string" }, (_request, body, done) => {
+  const text = body as string;
+  if (!text) { done(null, undefined); return; }
+  try { done(null, JSON.parse(text)); }
+  catch { done(null, text); }
+});
+
 if (config.AUTH_MODE === "first-party" && firstPartySigningKey) {
   const store = new OAuthStore(database.db);
   const provider = new OAuthProvider({ config, store, signingKey: firstPartySigningKey, database });
@@ -94,9 +108,17 @@ app.all(config.MCP_PATH, async (request, reply) => {
   await session.transport.handleRequest(request.raw, reply.raw, request.body);
 });
 
-app.setErrorHandler((error, _request, reply) => {
-  app.log.error(error);
-  if (!reply.sent) void reply.code(500).send({ error: "Internal server error" });
+app.setErrorHandler((error: unknown, _request, reply) => {
+  // Preserve client-error status codes (e.g. 415 from an unparseable body, 400
+  // from a malformed request) instead of masking everything as 500 — a 500 on
+  // the /mcp handshake makes strict clients abort the connection.
+  const rawStatus = typeof error === "object" && error && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode) : NaN;
+  const statusCode = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : 500;
+  if (statusCode >= 500) app.log.error(error);
+  if (!reply.sent) {
+    const message = statusCode >= 500 ? "Internal server error" : (error instanceof Error ? error.message : "Request error");
+    void reply.code(statusCode).send({ error: message });
+  }
 });
 
 await app.listen({ host: config.HOST, port: config.PORT });

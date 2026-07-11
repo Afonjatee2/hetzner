@@ -110,11 +110,13 @@ async function fullAuthorizeAndExchange(clientId, scope) {
     ...(scope ? { scope } : {})
   };
   const loginRes = await login(params, OPERATOR_PASSWORD);
-  assert.equal(loginRes.status, 302);
+  assert.equal(loginRes.status, 303);
   const location = new URL(loginRes.headers.get("location"));
   const code = location.searchParams.get("code");
   assert(code);
   assert.equal(location.searchParams.get("state"), params.state);
+  // RFC 9207: the authorization response must carry iss = the AS issuer.
+  assert.equal(location.searchParams.get("iss"), BASE);
   const tokenRes = await postToken({
     grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier
   });
@@ -170,6 +172,8 @@ async function main() {
     assert.deepEqual(asMeta1.body, asMeta2.body);
     assert(asMeta1.body.code_challenge_methods_supported.includes("S256"));
     assert.equal(asMeta1.body.client_id_metadata_document_supported, true);
+    assert.equal(asMeta1.body.authorization_response_iss_parameter_supported, true);
+    assert.equal(asMeta1.body.issuer, BASE);
     assert(asMeta1.body.token_endpoint_auth_methods_supported.includes("none"));
     assert(typeof asMeta1.body.authorization_endpoint === "string");
     assert(typeof asMeta1.body.token_endpoint === "string");
@@ -208,7 +212,7 @@ async function main() {
     assert.equal(wrongPasswordRes.status, 401);
 
     const loginRes = await postAuthorize({ ...authParams, csrf_token: csrfToken, password: OPERATOR_PASSWORD });
-    assert.equal(loginRes.status, 302);
+    assert.equal(loginRes.status, 303);
     const location = new URL(loginRes.headers.get("location"));
     const code = location.searchParams.get("code");
     assert(code);
@@ -229,6 +233,17 @@ async function main() {
     const unauthWwwAuth = unauthRes.headers.get("www-authenticate") ?? "";
     assert(unauthWwwAuth.includes('scope="workspace.read"'));
     assert(unauthWwwAuth.includes("resource_metadata="));
+
+    // A POST with a Content-Type Fastify has no specific parser for must still
+    // reach the handler and return the 401 challenge — never a 415/500 that
+    // would make a strict MCP client (ChatGPT) abort before authenticating.
+    const oddCtRes = await fetch(`${BASE}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json-rpc", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} })
+    });
+    assert.equal(oddCtRes.status, 401);
+    assert((oddCtRes.headers.get("www-authenticate") ?? "").includes("resource_metadata="));
 
     const accessToken = tokenRes1.json.access_token;
     const mcpClient = new Client({ name: "oauth-acceptance", version: "1.0.0" });
