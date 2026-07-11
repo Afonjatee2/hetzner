@@ -115,8 +115,7 @@ async function fullAuthorizeAndExchange(clientId, scope) {
   const code = location.searchParams.get("code");
   assert(code);
   assert.equal(location.searchParams.get("state"), params.state);
-  // RFC 9207: the authorization response must carry iss = the AS issuer.
-  assert.equal(location.searchParams.get("iss"), BASE);
+  assert.equal(location.searchParams.get("iss"), null);
   const tokenRes = await postToken({
     grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier
   });
@@ -178,7 +177,7 @@ async function main() {
     assert.deepEqual(asMeta1.body, asMeta2.body);
     assert(asMeta1.body.code_challenge_methods_supported.includes("S256"));
     assert.equal(asMeta1.body.client_id_metadata_document_supported, true);
-    assert.equal(asMeta1.body.authorization_response_iss_parameter_supported, true);
+    assert.equal("authorization_response_iss_parameter_supported" in asMeta1.body, false);
     assert.equal(asMeta1.body.issuer, BASE);
     assert(asMeta1.body.token_endpoint_auth_methods_supported.includes("none"));
     assert(typeof asMeta1.body.authorization_endpoint === "string");
@@ -223,6 +222,7 @@ async function main() {
     const code = location.searchParams.get("code");
     assert(code);
     assert.equal(location.searchParams.get("state"), "abc123");
+    assert.equal(location.searchParams.get("iss"), null);
 
     const tokenFields = { grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier };
     const tokenRes1 = await postToken(tokenFields);
