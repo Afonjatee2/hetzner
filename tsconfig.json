@@ -10,7 +10,7 @@
     { "path": "./packages/sandbox-runner" },
     { "path": "./packages/task-service" },
     { "path": "./packages/browser-service" },
+    { "path": "./packages/handoff-service" },
     { "path": "./apps/mcp-gateway" }
   ]
 }
-

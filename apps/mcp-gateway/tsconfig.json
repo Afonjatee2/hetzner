@@ -12,10 +12,10 @@
     { "path": "../../packages/persistence" },
     { "path": "../../packages/projects" },
     { "path": "../../packages/git-service" },
+    { "path": "../../packages/handoff-service" },
     { "path": "../../packages/artifact-service" },
     { "path": "../../packages/sandbox-runner" },
     { "path": "../../packages/task-service" },
     { "path": "../../packages/browser-service" }
   ]
 }
-

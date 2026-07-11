@@ -6,6 +6,8 @@ const Environment = z.object({
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8081),
   MCP_PATH: z.string().startsWith("/").default("/mcp"),
+  GATEWAY_NAME: z.string().min(1).max(100).default("hetzner-dev-workspace"),
+  GATEWAY_PROFILE: z.enum(["full", "local-files"]).default("full"),
   PUBLIC_BASE_URL: z.string().url().default("http://127.0.0.1:8081"),
   WORKSPACE_ROOT: z.string().default("./fixtures/workspaces"),
   WORKTREE_ROOT: z.string().default("./.state/worktrees"),
@@ -25,7 +27,13 @@ const Environment = z.object({
   OAUTH_OPERATOR_PASSWORD_HASH: z.string().optional(),
   OAUTH_SIGNING_KEY_PATH: z.string().default("./.state/oauth-signing-key.pem"),
   OAUTH_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(3600).default(3600),
-  OAUTH_REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30)
+  OAUTH_REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(30),
+  HANDOFF_OUTBOX_DIR: z.string().optional(),
+  HANDOFF_INBOX_DIR: z.string().optional(),
+  HANDOFF_SSH_TARGET: z.string().regex(/^[a-z_][a-z0-9_-]*@[a-zA-Z0-9.-]+$/).optional(),
+  HANDOFF_SSH_KEY_PATH: z.string().optional(),
+  HANDOFF_SSH_KNOWN_HOSTS_PATH: z.string().optional(),
+  HANDOFF_MAX_BYTES: z.coerce.number().int().min(1_048_576).max(524_288_000).default(104_857_600)
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -41,6 +49,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (parsed.AUTH_MODE === "first-party" && !parsed.OAUTH_OPERATOR_PASSWORD_HASH) {
     throw new Error("first-party mode requires OAUTH_OPERATOR_PASSWORD_HASH");
   }
+  const senderFields = [parsed.HANDOFF_OUTBOX_DIR, parsed.HANDOFF_SSH_TARGET, parsed.HANDOFF_SSH_KEY_PATH, parsed.HANDOFF_SSH_KNOWN_HOSTS_PATH];
+  if (senderFields.some(Boolean) && !senderFields.every(Boolean)) {
+    throw new Error("Handoff sender requires OUTBOX_DIR, SSH_TARGET, SSH_KEY_PATH and SSH_KNOWN_HOSTS_PATH");
+  }
   const trimmedBaseUrl = parsed.PUBLIC_BASE_URL.replace(/\/+$/, "");
   const oauthIssuer = parsed.AUTH_MODE === "first-party" ? trimmedBaseUrl : parsed.OAUTH_ISSUER;
   const oauthAudience = parsed.AUTH_MODE === "first-party" ? `${trimmedBaseUrl}${parsed.MCP_PATH}` : parsed.OAUTH_AUDIENCE;
@@ -52,6 +64,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     artifactDir: resolve(parsed.ARTIFACT_DIR),
     databasePath: resolve(parsed.DATABASE_URL),
     signingKeyPath: resolve(parsed.OAUTH_SIGNING_KEY_PATH),
+    handoffOutboxDir: parsed.HANDOFF_OUTBOX_DIR ? resolve(parsed.HANDOFF_OUTBOX_DIR) : undefined,
+    handoffInboxDir: parsed.HANDOFF_INBOX_DIR ? resolve(parsed.HANDOFF_INBOX_DIR) : undefined,
+    handoffSshKeyPath: parsed.HANDOFF_SSH_KEY_PATH ? resolve(parsed.HANDOFF_SSH_KEY_PATH) : undefined,
+    handoffKnownHostsPath: parsed.HANDOFF_SSH_KNOWN_HOSTS_PATH ? resolve(parsed.HANDOFF_SSH_KNOWN_HOSTS_PATH) : undefined,
     oauthIssuer,
     oauthAudience
   };

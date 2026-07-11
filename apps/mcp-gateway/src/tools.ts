@@ -5,6 +5,7 @@ import { createAuditEvent } from "@gpt-dev/audit-service";
 import type { ArtifactService } from "@gpt-dev/artifact-service";
 import { BrowserAction, type BrowserService, type DevServerService } from "@gpt-dev/browser-service";
 import type { GitService } from "@gpt-dev/git-service";
+import type { HandoffInbox, HandoffSender } from "@gpt-dev/handoff-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { ProjectService } from "@gpt-dev/projects";
 import type { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
@@ -22,6 +23,8 @@ export interface Services {
   artifacts: ArtifactService;
   browser: BrowserService;
   devServers: DevServerService;
+  handoffSender: HandoffSender | undefined;
+  handoffInbox: HandoffInbox | undefined;
 }
 
 interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
@@ -66,7 +69,7 @@ function rootFor(services: Services, projectId: string, taskId?: string): string
 }
 
 export function createMcpServer(services: Services): McpServer {
-  const server = new McpServer({ name: "hetzner-dev-workspace", version: "0.1.0" }, { capabilities: { logging: {} } });
+  const server = new McpServer({ name: services.config.GATEWAY_NAME, version: "0.1.0" }, { capabilities: { logging: {} } });
 
   server.registerTool("system_health", {
     description: "Read gateway, SQLite, workspace and Docker runner health. Makes no changes.",
@@ -144,6 +147,43 @@ export function createMcpServer(services: Services): McpServer {
     description: "Read the bounded Git diff for an active task worktree.", inputSchema: { projectId: ProjectId, taskId: TaskId },
     annotations: { title: "Git diff", readOnlyHint: true, openWorldHint: false }
   }, async (input) => safely(services, "git_diff", { projectId: input.projectId, taskId: input.taskId }, () => services.git.diff(rootFor(services, input.projectId, input.taskId))));
+
+  if (services.handoffSender) {
+    server.registerTool("send_handoff_to_hetzner", {
+      description: "Stream a clean committed task branch to the fixed Hetzner handoff inbox over a restricted SSH identity. The destination cannot be changed by tool input.",
+      inputSchema: { projectId: ProjectId, taskId: TaskId },
+      annotations: { title: "Send handoff to Hetzner", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+    }, async (input) => safely(services, "send_handoff_to_hetzner", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
+      const tree = services.database.db.prepare(`
+        SELECT task_id AS taskId, project_id AS projectId, path, branch, status, created_at AS createdAt
+        FROM worktrees WHERE task_id=? AND project_id=?
+      `).get(input.taskId, input.projectId) as WorktreeRecord | undefined;
+      if (!tree || !new Set(["active", "committed"]).has(tree.status)) throw new WorkspaceError("NOT_FOUND", "Handoff task worktree not found");
+      return services.handoffSender!.send(input.projectId, tree.path);
+    }));
+  }
+
+  if (services.handoffInbox) {
+    server.registerTool("list_incoming_handoffs", {
+      description: "List verified Git bundles received from the paired Mac Project Files connector.",
+      inputSchema: {}, annotations: { title: "List incoming handoffs", readOnlyHint: true, openWorldHint: false }
+    }, async () => safely(services, "list_incoming_handoffs", {}, () => services.handoffInbox!.list()));
+
+    server.registerTool("import_handoff", {
+      description: "Import a verified Mac handoff as a new approved project below the Hetzner workspace root. The original bundle is archived.",
+      inputSchema: { handoffId: TaskId, runtime: z.enum(["node", "python", "generic"]).default("generic") },
+      annotations: { title: "Import handoff", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+    }, async (input) => safely(services, "import_handoff", {}, async () => {
+      const imported = await services.handoffInbox!.import(input.handoffId);
+      const project = services.projects.register({
+        id: imported.registeredProjectId,
+        canonicalPath: imported.path,
+        defaultBranch: imported.branch,
+        runtime: input.runtime
+      });
+      return { ...imported, project };
+    }));
+  }
 
   server.registerTool("run_command", {
     description: "Start an asynchronous command inside a constrained disposable container mounted only to the task worktree and artifacts. Network is disabled by default.",

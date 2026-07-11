@@ -1,5 +1,5 @@
-import { constants, realpathSync } from "node:fs";
-import { access, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { accessSync, constants, realpathSync } from "node:fs";
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
@@ -20,6 +20,21 @@ export interface TreeEntry {
 }
 
 const DEFAULT_EXCLUDES = new Set([".git", "node_modules", "dist", "coverage", ".state", ".artifacts"]);
+const PROTECTED_DIRECTORIES = new Set([".git", ".ssh", ".aws", ".gnupg", ".kube"]);
+const PROTECTED_FILES = new Set([".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519", "credentials"]);
+
+export function isProtectedPath(requested: string): boolean {
+  const parts = requested.replaceAll("\\", "/").split("/").filter((part) => part && part !== ".");
+  if (parts.some((part) => PROTECTED_DIRECTORIES.has(part))) return true;
+  const name = parts.at(-1)?.toLowerCase() ?? "";
+  if (name === ".env" || (name.startsWith(".env.") && name !== ".env.example")) return true;
+  if (PROTECTED_FILES.has(name)) return true;
+  return /\.(?:pem|key|p12|pfx)$/i.test(name);
+}
+
+function assertUnprotected(requested: string): void {
+  if (isProtectedPath(requested)) throw new WorkspaceError("FORBIDDEN", "Protected credential paths are not available through this connector");
+}
 
 function isInside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -50,11 +65,22 @@ export async function resolveContained(root: string, requested = ".", mustExist 
 }
 
 export class ProjectService {
-  constructor(private readonly database: WorkspaceDatabase) {}
+  private readonly allowedRootReal: string | undefined;
+
+  constructor(private readonly database: WorkspaceDatabase, allowedRoot?: string) {
+    this.allowedRootReal = allowedRoot ? realpathSync(allowedRoot) : undefined;
+  }
 
   register(input: Omit<ProjectRecord, "canonicalPath" | "createdAt"> & { canonicalPath: string }): ProjectRecord {
     const canonicalPath = realpathSync(input.canonicalPath);
-    access(canonicalPath, constants.R_OK | constants.W_OK).catch(() => undefined);
+    if (this.allowedRootReal && !isInside(this.allowedRootReal, canonicalPath)) {
+      throw new WorkspaceError("FORBIDDEN", "Project is outside the configured workspace root");
+    }
+    try {
+      accessSync(canonicalPath, constants.R_OK | constants.W_OK);
+    } catch {
+      throw new WorkspaceError("FORBIDDEN", "Project must be readable and writable by the gateway user");
+    }
     const gitPath = resolve(canonicalPath, ".git");
     try {
       realpathSync(gitPath);
@@ -88,13 +114,14 @@ export class ProjectService {
   }
 
   async tree(root: string, requested = ".", maxEntries = 1000, maxDepth = 8): Promise<TreeEntry[]> {
+    assertUnprotected(requested);
     const start = await resolveContained(root, requested);
     const rootReal = await realpath(root);
     const entries: TreeEntry[] = [];
     const walk = async (current: string, depth: number): Promise<void> => {
       if (entries.length >= maxEntries || depth > maxDepth) return;
       for (const item of await readdir(current, { withFileTypes: true })) {
-        if (DEFAULT_EXCLUDES.has(item.name)) continue;
+        if (DEFAULT_EXCLUDES.has(item.name) || isProtectedPath(relative(rootReal, resolve(current, item.name)))) continue;
         const absolute = resolve(current, item.name);
         const info = await lstat(absolute);
         const path = relative(rootReal, absolute) || ".";
@@ -114,6 +141,7 @@ export class ProjectService {
   }
 
   async readText(root: string, requested: string, maxBytes = 1_000_000): Promise<string> {
+    assertUnprotected(requested);
     const path = await resolveContained(root, requested);
     const info = await stat(path);
     if (!info.isFile()) throw new WorkspaceError("VALIDATION", "Path is not a regular file");
@@ -124,6 +152,7 @@ export class ProjectService {
   }
 
   async writeText(root: string, requested: string, content: string): Promise<void> {
+    assertUnprotected(requested);
     const path = await resolveContained(root, requested, false);
     await mkdir(dirname(path), { recursive: true, mode: 0o750 });
     const temporary = `${path}.gptdev-${process.pid}-${Date.now()}`;
@@ -132,6 +161,7 @@ export class ProjectService {
   }
 
   async remove(root: string, requested: string): Promise<void> {
+    assertUnprotected(requested);
     const path = await resolveContained(root, requested);
     if (path === await realpath(root)) throw new WorkspaceError("FORBIDDEN", "Cannot remove the project root");
     await rm(path, { recursive: true, force: false });
@@ -140,7 +170,12 @@ export class ProjectService {
   async search(root: string, pattern: string, maxResults = 200): Promise<string[]> {
     await resolveContained(root);
     return await new Promise((resolvePromise, reject) => {
-      const child = spawn("rg", ["--line-number", "--color", "never", "--max-count", String(maxResults), "--", pattern, "."], {
+      const child = spawn("rg", [
+        "--line-number", "--color", "never", "--max-count", String(maxResults),
+        "--glob", "!.git/**", "--glob", "!.ssh/**", "--glob", "!.aws/**", "--glob", "!.gnupg/**", "--glob", "!.kube/**",
+        "--glob", "!.env", "--glob", "!.env.*", "--glob", "!.npmrc", "--glob", "!*.pem", "--glob", "!*.key", "--glob", "!*.p12", "--glob", "!*.pfx",
+        "--", pattern, "."
+      ], {
         cwd: root,
         stdio: ["ignore", "pipe", "pipe"]
       });

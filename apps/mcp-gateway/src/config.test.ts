@@ -49,4 +49,19 @@ describe("loadConfig", () => {
   it("rejects first-party mode without a password hash", () => {
     expect(() => loadConfig({ ...BASE_ENV, AUTH_MODE: "first-party" })).toThrow(/OAUTH_OPERATOR_PASSWORD_HASH/);
   });
+
+  it("accepts a local-files profile with a fixed SSH handoff target", () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      GATEWAY_NAME: "mac-project-files",
+      GATEWAY_PROFILE: "local-files",
+      HANDOFF_OUTBOX_DIR: "/tmp/outbox",
+      HANDOFF_SSH_TARGET: "gptsync@167.233.75.192",
+      HANDOFF_SSH_KEY_PATH: "/tmp/handoff-key",
+      HANDOFF_SSH_KNOWN_HOSTS_PATH: "/tmp/known-hosts"
+    });
+    expect(config.GATEWAY_NAME).toBe("mac-project-files");
+    expect(config.GATEWAY_PROFILE).toBe("local-files");
+    expect(config.HANDOFF_SSH_TARGET).toBe("gptsync@167.233.75.192");
+  });
 });

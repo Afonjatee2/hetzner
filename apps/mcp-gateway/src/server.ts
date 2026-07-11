@@ -6,6 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ArtifactService } from "@gpt-dev/artifact-service";
 import { BrowserService, DevServerService } from "@gpt-dev/browser-service";
 import { GitService } from "@gpt-dev/git-service";
+import { HandoffInbox, HandoffSender } from "@gpt-dev/handoff-service";
 import { WorkspaceDatabase } from "@gpt-dev/persistence";
 import { ProjectService } from "@gpt-dev/projects";
 import { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
@@ -21,15 +22,25 @@ import { createMcpServer } from "./tools.js";
 
 const config = loadConfig();
 const database = new WorkspaceDatabase(config.databasePath);
-const projects = new ProjectService(database);
+const projects = new ProjectService(database, config.workspaceRoot);
 const git = new GitService(config.worktreeRoot);
 const runner = new DockerSandboxRunner();
 const artifacts = new ArtifactService(database, config.artifactDir);
 const tasks = new TaskService(database, runner, artifacts);
 const browser = new BrowserService();
 const devServers = new DevServerService(database);
+const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && config.handoffSshKeyPath && config.handoffKnownHostsPath
+  ? new HandoffSender({
+      outboxDir: config.handoffOutboxDir,
+      sshTarget: config.HANDOFF_SSH_TARGET,
+      sshKeyPath: config.handoffSshKeyPath,
+      knownHostsPath: config.handoffKnownHostsPath,
+      maxBytes: config.HANDOFF_MAX_BYTES
+    })
+  : undefined;
+const handoffInbox = config.handoffInboxDir ? new HandoffInbox(config.handoffInboxDir, config.workspaceRoot) : undefined;
 const interrupted = tasks.reconcileInterrupted();
-const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers };
+const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers, handoffSender, handoffInbox };
 const firstPartySigningKey = config.AUTH_MODE === "first-party" ? await loadOrCreateSigningKey(config.signingKeyPath) : undefined;
 const auth = new AuthService(config, firstPartySigningKey ? [firstPartySigningKey] : undefined);
 // Only trust X-Forwarded-For from loopback: cloudflared (or any local reverse

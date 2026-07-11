@@ -37,3 +37,4 @@ OrbStack is a local engine only. Production uses Docker Engine or Podman on Hetz
 
 See [architecture](docs/architecture.md), [deployment](docs/deployment.md), [operations](docs/operations.md), [recovery](docs/recovery.md), and the [threat model](docs/threat-model.md).
 
+For continuation from ChatGPT Web against selected projects on the Mac, see the separate [Mac Project Files connector](docs/mac-project-files.md). It uses Git bundles and a restricted SSH receiver to hand committed task branches to the Hetzner sandbox without exposing the rest of the Mac filesystem.

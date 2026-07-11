@@ -75,6 +75,9 @@ importers:
       '@gpt-dev/git-service':
         specifier: workspace:*
         version: link:../../packages/git-service
+      '@gpt-dev/handoff-service':
+        specifier: workspace:*
+        version: link:../../packages/handoff-service
       '@gpt-dev/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
@@ -122,6 +125,15 @@ importers:
 
   packages/git-service:
     dependencies:
+      '@gpt-dev/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+
+  packages/handoff-service:
+    dependencies:
+      '@gpt-dev/projects':
+        specifier: workspace:*
+        version: link:../projects
       '@gpt-dev/schemas':
         specifier: workspace:*
         version: link:../schemas
