@@ -170,17 +170,15 @@ export class ProjectService {
 
   async search(root: string, pattern: string, maxResults = 200): Promise<string[]> {
     await resolveContained(root);
-    return await new Promise((resolvePromise, reject) => {
+    const commonExcludes = [
+      "--glob", "!.git/**", "--glob", "!.ssh/**", "--glob", "!.aws/**", "--glob", "!.gnupg/**", "--glob", "!.kube/**",
+      "--glob", "!.npmrc", "--glob", "!*.pem", "--glob", "!*.key", "--glob", "!*.p12", "--glob", "!*.pfx"
+    ];
+    const runSearch = async (globs: string[]): Promise<string[]> => await new Promise((resolvePromise, reject) => {
       const child = spawn("rg", [
         "--line-number", "--color", "never", "--max-count", String(maxResults),
-        "--glob", "!.git/**", "--glob", "!.ssh/**", "--glob", "!.aws/**", "--glob", "!.gnupg/**", "--glob", "!.kube/**",
-        "--glob", "!.env", "--glob", "!.env.*", "--glob", ".env.example", "--glob", ".env.*.example",
-        "--glob", "!.npmrc", "--glob", "!*.pem", "--glob", "!*.key", "--glob", "!*.p12", "--glob", "!*.pfx",
-        "--", pattern, "."
-      ], {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"]
-      });
+        ...commonExcludes, ...globs, "--", pattern, "."
+      ], { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
@@ -188,8 +186,12 @@ export class ProjectService {
       child.on("error", reject);
       child.on("close", (code) => {
         if (code !== 0 && code !== 1) reject(new WorkspaceError("EXECUTION_FAILED", stderr.trim() || "ripgrep failed"));
-        else resolvePromise(stdout.split("\n").filter(Boolean).slice(0, maxResults));
+        else resolvePromise(stdout.split("\n").filter(Boolean));
       });
     });
+
+    const regularMatches = await runSearch(["--glob", "!.env", "--glob", "!.env.*"]);
+    const exampleMatches = await runSearch(["--glob", ".env.example", "--glob", ".env.*.example"]);
+    return [...new Set([...regularMatches, ...exampleMatches])].slice(0, maxResults);
   }
 }
