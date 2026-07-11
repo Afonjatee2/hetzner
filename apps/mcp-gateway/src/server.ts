@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -100,15 +100,15 @@ app.get("/healthz", async () => ({ status: "ok", docker: await runner.health(), 
 app.get("/.well-known/oauth-protected-resource", () => auth.protectedResourceMetadata());
 app.get("/.well-known/oauth-protected-resource/mcp", () => auth.protectedResourceMetadata());
 
-app.all(config.MCP_PATH, async (request, reply) => {
+const handleMcpRequest = async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
   try {
     await auth.authenticate(request, ["workspace.read"]);
   } catch (error) {
     const statusCode = typeof error === "object" && error && "statusCode" in error ? Number(error.statusCode) : 401;
     const resourceMetadata = `${config.PUBLIC_BASE_URL}/.well-known/oauth-protected-resource`;
     const wwwAuthenticate = statusCode === 403
-      ? `Bearer error="insufficient_scope", scope="workspace.read", resource_metadata="${resourceMetadata}"`
-      : `Bearer scope="workspace.read", resource_metadata="${resourceMetadata}"`;
+      ? `Bearer resource_metadata="${resourceMetadata}", error="insufficient_scope", scope="workspace.read"`
+      : `Bearer resource_metadata="${resourceMetadata}", scope="workspace.read"`;
     reply.header("WWW-Authenticate", wwwAuthenticate);
     return reply.code(statusCode).send({ error: error instanceof Error ? error.message : "Unauthorized" });
   }
@@ -134,7 +134,14 @@ app.all(config.MCP_PATH, async (request, reply) => {
 
   reply.hijack();
   await session.transport.handleRequest(request.raw, reply.raw, request.body);
-});
+  return undefined;
+};
+
+app.all(config.MCP_PATH, handleMcpRequest);
+// ChatGPT connectors are frequently configured with the bare origin instead of
+// the /mcp path; every MCP call then 404s at "/" and the connector shows
+// "Error refreshing actions". Serve MCP at the root as well so both work.
+if (config.MCP_PATH !== "/") app.all("/", handleMcpRequest);
 
 app.setErrorHandler((error: unknown, _request, reply) => {
   // Preserve client-error status codes (e.g. 415 from an unparseable body, 400

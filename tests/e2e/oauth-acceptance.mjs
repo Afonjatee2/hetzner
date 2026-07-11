@@ -88,6 +88,17 @@ async function login(params, password) {
   return res;
 }
 
+// A successful authorization now returns a 200 hand-off page (bare 303
+// responses were silently dropped by some browser profiles); the redirect
+// target lives in the page's location.replace call.
+async function authorizationTargetUrl(res) {
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  const match = html.match(/window\.location\.replace\((".*?")\)/);
+  assert(match, "hand-off page should contain a location.replace target");
+  return new URL(JSON.parse(match[1]));
+}
+
 async function postToken(fields) {
   const res = await fetch(`${BASE}/oauth/token`, {
     method: "POST",
@@ -110,12 +121,11 @@ async function fullAuthorizeAndExchange(clientId, scope) {
     ...(scope ? { scope } : {})
   };
   const loginRes = await login(params, OPERATOR_PASSWORD);
-  assert.equal(loginRes.status, 303);
-  const location = new URL(loginRes.headers.get("location"));
+  const location = await authorizationTargetUrl(loginRes);
   const code = location.searchParams.get("code");
   assert(code);
   assert.equal(location.searchParams.get("state"), params.state);
-  assert.equal(location.searchParams.get("iss"), null);
+  assert.equal(location.searchParams.get("iss"), BASE);
   const tokenRes = await postToken({
     grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier
   });
@@ -177,7 +187,7 @@ async function main() {
     assert.deepEqual(asMeta1.body, asMeta2.body);
     assert(asMeta1.body.code_challenge_methods_supported.includes("S256"));
     assert.equal(asMeta1.body.client_id_metadata_document_supported, true);
-    assert.equal("authorization_response_iss_parameter_supported" in asMeta1.body, false);
+    assert.equal(asMeta1.body.authorization_response_iss_parameter_supported, true);
     assert.equal(asMeta1.body.issuer, BASE);
     assert(asMeta1.body.token_endpoint_auth_methods_supported.includes("none"));
     assert(typeof asMeta1.body.authorization_endpoint === "string");
@@ -217,12 +227,11 @@ async function main() {
     assert.equal(wrongPasswordRes.status, 401);
 
     const loginRes = await postAuthorize({ ...authParams, csrf_token: csrfToken, password: OPERATOR_PASSWORD });
-    assert.equal(loginRes.status, 303);
-    const location = new URL(loginRes.headers.get("location"));
+    const location = await authorizationTargetUrl(loginRes);
     const code = location.searchParams.get("code");
     assert(code);
     assert.equal(location.searchParams.get("state"), "abc123");
-    assert.equal(location.searchParams.get("iss"), null);
+    assert.equal(location.searchParams.get("iss"), BASE);
 
     const tokenFields = { grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier };
     const tokenRes1 = await postToken(tokenFields);

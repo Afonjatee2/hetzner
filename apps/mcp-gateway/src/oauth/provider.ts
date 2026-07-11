@@ -13,10 +13,13 @@ import type { OAuthStore, RefreshTokenRecord } from "./store.js";
 export const SUPPORTED_SCOPES = ["workspace.read", "workspace.write", "task.execute", "task.network"] as const;
 
 // OAuth recommends authorization codes expire shortly after issuance, with a
-// maximum lifetime of 10 minutes. ChatGPT may complete its browser callback
-// several minutes before its backend redeems the code, so a two-minute window
-// causes valid interactive flows to fail with invalid_grant.
-const CODE_TTL_MS = 10 * 60_000;
+// maximum lifetime of 10 minutes. ChatGPT's connector platform has been
+// observed redeeming codes ~12 minutes after issuance (2026-07-11: redemption
+// at 11m50s hit the previous 10-minute window and failed with invalid_grant),
+// so this deliberately exceeds the RFC guidance. Codes remain single-use,
+// PKCE-bound, and stored hashed, so the extra exposure is acceptable for a
+// single-operator gateway.
+const CODE_TTL_MS = 30 * 60_000;
 const REFRESH_GRACE_MS = 60_000;
 
 export interface ProviderDeps {
@@ -64,6 +67,8 @@ export interface TokenResult {
   status: number;
   headers?: Record<string, string>;
   body: unknown;
+  /** Internal-only rejection reason for logs/audit; never sent to the client. */
+  reason?: string;
 }
 
 const RegisterClientBody = z.object({
@@ -82,6 +87,12 @@ function normalizeResource(value: string): string {
 }
 
 export class OAuthProvider {
+  // In-memory cache of recently issued codes keyed by request fingerprint.
+  // Prevents multiple codes from being issued for the same authorization
+  // request when the browser double-clicks the sign-in button or resubmits
+  // before the redirect completes.  Values expire after CODE_TTL_MS.
+  private readonly recentCodes = new Map<string, { code: string; expiresAt: number }>();
+
   constructor(private readonly deps: ProviderDeps) {}
 
   private now(): Date {
@@ -90,6 +101,10 @@ export class OAuthProvider {
 
   private audit(action: string, detail: Record<string, unknown>): void {
     this.deps.database.recordAudit(createAuditEvent({ action, actor: "oauth-provider", destructive: false, networked: false, detail }));
+  }
+
+  private requestFingerprint(request: PreparedAuthorizeRequest): string {
+    return [request.clientId, request.redirectUri, request.codeChallenge].join("|");
   }
 
   authorizationServerMetadata(): Record<string, unknown> {
@@ -105,7 +120,10 @@ export class OAuthProvider {
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: [...SUPPORTED_SCOPES],
-      client_id_metadata_document_supported: true
+      // Advertised by the known-good dev-mcp gateway; ChatGPT falls back to
+      // dynamic registration when this is absent, which changes the flow.
+      client_id_metadata_document_supported: true,
+      authorization_response_iss_parameter_supported: true
     };
   }
 
@@ -228,6 +246,20 @@ export class OAuthProvider {
   }
 
   issueCode(request: PreparedAuthorizeRequest): string {
+    const fingerprint = this.requestFingerprint(request);
+    const nowMs = this.now().getTime();
+
+    // Reuse a code issued for the same request within the last 30 seconds.
+    // This prevents the browser sending multiple authorization codes when the
+    // user double-clicks Sign in or when a redirected page reloads the form
+    // before the server redirect is followed.  The idempotency window is short
+    // enough that a legitimate re-request (new state/code_challenge) always
+    // creates a fresh code, but long enough to absorb form resubmission races.
+    const recent = this.recentCodes.get(fingerprint);
+    if (recent && recent.expiresAt > nowMs) {
+      return recent.code;
+    }
+
     const code = randomToken();
     const now = this.now();
     this.deps.store.insertCode({
@@ -242,6 +274,16 @@ export class OAuthProvider {
       createdAt: now.toISOString()
     });
     this.audit("oauth.code.issued", { clientId: request.clientId });
+
+    // Cache for 30 s idempotency window; evict expired entries when we reach a
+    // reasonable size to prevent unbounded growth.
+    this.recentCodes.set(fingerprint, { code, expiresAt: nowMs + 30_000 });
+    if (this.recentCodes.size > 200) {
+      for (const [key, value] of this.recentCodes) {
+        if (value.expiresAt <= nowMs) this.recentCodes.delete(key);
+      }
+    }
+
     return code;
   }
 
@@ -259,15 +301,21 @@ export class OAuthProvider {
       .sign(this.deps.signingKey.privateKey);
   }
 
-  private tokenError(status: number, error: string, description?: string): TokenResult {
-    return { status, headers: { "Cache-Control": "no-store" }, body: { error, ...(description ? { error_description: description } : {}) } };
+  private tokenError(status: number, error: string, reason?: string, description?: string): TokenResult {
+    if (reason) this.audit("oauth.token.rejected", { error, reason });
+    return {
+      status,
+      headers: { "Cache-Control": "no-store" },
+      body: { error, ...(description ? { error_description: description } : {}) },
+      ...(reason ? { reason } : {})
+    };
   }
 
   async handleTokenRequest(body: Record<string, string | undefined>): Promise<TokenResult> {
     this.deps.store.purgeExpired();
     if (body.grant_type === "authorization_code") return this.handleAuthorizationCodeGrant(body);
     if (body.grant_type === "refresh_token") return this.handleRefreshTokenGrant(body);
-    return this.tokenError(400, "unsupported_grant_type");
+    return this.tokenError(400, "unsupported_grant_type", "unsupported_grant_type");
   }
 
   private revokeFamilyFromCachedResponse(tokenResponseJson: string, clientId: string): void {
@@ -286,11 +334,11 @@ export class OAuthProvider {
 
   private async handleAuthorizationCodeGrant(body: Record<string, string | undefined>): Promise<TokenResult> {
     const { code, redirect_uri: redirectUri, client_id: clientId, code_verifier: codeVerifier } = body;
-    if (!code || !redirectUri || !clientId || !codeVerifier) return this.tokenError(400, "invalid_request");
+    if (!code || !redirectUri || !clientId || !codeVerifier) return this.tokenError(400, "invalid_request", "missing_code_params");
 
     const codeHash = sha256Hex(code);
     const row = this.deps.store.getCode(codeHash);
-    if (!row) return this.tokenError(400, "invalid_grant");
+    if (!row) return this.tokenError(400, "invalid_grant", "code_not_found");
 
     const nowMs = this.now().getTime();
     const expiresMs = Date.parse(row.expiresAt);
@@ -303,12 +351,12 @@ export class OAuthProvider {
         return { status: 200, headers: { "Cache-Control": "no-store" }, body: JSON.parse(row.tokenResponseJson) as unknown };
       }
       if (row.tokenResponseJson) this.revokeFamilyFromCachedResponse(row.tokenResponseJson, clientId);
-      return this.tokenError(400, "invalid_grant");
+      return this.tokenError(400, "invalid_grant", "code_already_consumed_replay_mismatch");
     }
 
-    if (nowMs > expiresMs) return this.tokenError(400, "invalid_grant");
-    if (row.clientId !== clientId || row.redirectUri !== redirectUri) return this.tokenError(400, "invalid_grant");
-    if (row.codeChallengeMethod !== "S256" || !verifyCodeVerifier(codeVerifier, row.codeChallenge)) return this.tokenError(400, "invalid_grant");
+    if (nowMs > expiresMs) return this.tokenError(400, "invalid_grant", "code_expired");
+    if (row.clientId !== clientId || row.redirectUri !== redirectUri) return this.tokenError(400, "invalid_grant", row.clientId !== clientId ? "client_id_mismatch" : "redirect_uri_mismatch");
+    if (row.codeChallengeMethod !== "S256" || !verifyCodeVerifier(codeVerifier, row.codeChallenge)) return this.tokenError(400, "invalid_grant", "pkce_mismatch");
 
     const scope = row.scope;
     const familyId = randomUUID();
@@ -344,7 +392,7 @@ export class OAuthProvider {
       ) {
         return { status: 200, headers: { "Cache-Control": "no-store" }, body: JSON.parse(fresh.tokenResponseJson) as unknown };
       }
-      return this.tokenError(400, "invalid_grant");
+      return this.tokenError(400, "invalid_grant", "code_consume_race_lost");
     }
 
     this.audit("oauth.token.issued", { clientId, familyId });
@@ -353,15 +401,15 @@ export class OAuthProvider {
 
   private async handleRefreshTokenGrant(body: Record<string, string | undefined>): Promise<TokenResult> {
     const { refresh_token: refreshToken, client_id: clientId } = body;
-    if (!refreshToken || !clientId) return this.tokenError(400, "invalid_request");
+    if (!refreshToken || !clientId) return this.tokenError(400, "invalid_request", "missing_refresh_params");
 
     const tokenHash = sha256Hex(refreshToken);
     const row = this.deps.store.getRefreshToken(tokenHash);
-    if (!row || row.clientId !== clientId) return this.tokenError(400, "invalid_grant");
+    if (!row || row.clientId !== clientId) return this.tokenError(400, "invalid_grant", !row ? "refresh_token_not_found" : "refresh_client_id_mismatch");
 
     const nowMs = this.now().getTime();
-    if (row.revokedAt) return this.tokenError(400, "invalid_grant");
-    if (Date.parse(row.expiresAt) < nowMs) return this.tokenError(400, "invalid_grant");
+    if (row.revokedAt) return this.tokenError(400, "invalid_grant", "refresh_token_revoked");
+    if (Date.parse(row.expiresAt) < nowMs) return this.tokenError(400, "invalid_grant", "refresh_token_expired");
 
     if (row.rotatedAt) {
       const rotatedMs = Date.parse(row.rotatedAt);
@@ -370,7 +418,7 @@ export class OAuthProvider {
       }
       this.deps.store.revokeFamily(row.familyId);
       this.audit("oauth.token.reuse_detected", { familyId: row.familyId, clientId });
-      return this.tokenError(400, "invalid_grant");
+      return this.tokenError(400, "invalid_grant", "refresh_reuse_outside_grace");
     }
 
     const scope = row.scope;
@@ -408,7 +456,7 @@ export class OAuthProvider {
       }
       this.deps.store.revokeFamily(row.familyId);
       this.audit("oauth.token.reuse_detected", { familyId: row.familyId, clientId });
-      return this.tokenError(400, "invalid_grant");
+      return this.tokenError(400, "invalid_grant", "refresh_rotation_race_outside_grace");
     }
 
     this.audit("oauth.token.refreshed", { clientId, familyId: row.familyId });

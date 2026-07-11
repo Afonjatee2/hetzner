@@ -3,7 +3,7 @@ import { createAuditEvent } from "@gpt-dev/audit-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { Config } from "../config.js";
 import { buildJwks, type SigningKey } from "./keys.js";
-import { createCsrfToken, LoginRateLimiter, renderLoginPage, verifyCsrfToken } from "./login.js";
+import { createCsrfToken, LoginRateLimiter, renderLoginPage, renderRedirectPage, verifyCsrfToken } from "./login.js";
 import { verifyPassword } from "./password.js";
 import type { OAuthProvider } from "./provider.js";
 
@@ -16,16 +16,18 @@ export interface OAuthRoutesDeps {
   rateLimiter: LoginRateLimiter;
 }
 
-function redirectWithError(redirectUri: string, error: string, description?: string, state?: string): URL {
+function redirectWithError(redirectUri: string, error: string, issuer: string, description?: string, state?: string): URL {
   const target = new URL(redirectUri);
   target.searchParams.set("error", error);
   if (description) target.searchParams.set("error_description", description);
   if (state !== undefined) target.searchParams.set("state", state);
+  target.searchParams.set("iss", issuer);
   return target;
 }
 
 export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps): void {
   const { config, database, provider, signingKey, csrfSecret, rateLimiter } = deps;
+  const issuer = config.oauthIssuer ?? "";
   const gatewayDisplayName = config.GATEWAY_NAME.split("-")
     .map((part) => part.length > 0 ? part[0]?.toUpperCase() + part.slice(1) : part)
     .join(" ");
@@ -70,12 +72,12 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       return reply.code(outcome.status).type("text/html").send(outcome.html);
     }
     if (outcome.kind === "redirect_error") {
-      const target = redirectWithError(outcome.redirectUri, outcome.error, outcome.description, outcome.state);
+      const target = redirectWithError(outcome.redirectUri, outcome.error, issuer, outcome.description, outcome.state);
       return reply.code(302).header("Location", target.toString()).send();
     }
     const csrfToken = createCsrfToken(csrfSecret);
     const html = renderLoginPage({ ...outcome.request }, csrfToken, gatewayDisplayName);
-    reply.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'");
+    reply.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; form-action 'self'; script-src 'unsafe-inline'");
     return reply.type("text/html").send(html);
   });
 
@@ -83,6 +85,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     const body = request.body as Record<string, string | undefined>;
     reply.header("Cache-Control", "no-store");
     const ip = request.ip;
+    const corrId = typeof body.corr_id === "string" && body.corr_id.length > 0 ? body.corr_id : undefined;
 
     const query = {
       response_type: body.response_type,
@@ -99,7 +102,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       return reply.code(outcome.status).type("text/html").send(outcome.html);
     }
     if (outcome.kind === "redirect_error") {
-      const target = redirectWithError(outcome.redirectUri, outcome.error, outcome.description, outcome.state);
+      const target = redirectWithError(outcome.redirectUri, outcome.error, issuer, outcome.description, outcome.state);
       // A POST authorization response must unambiguously continue as GET.
       // Unlike 302, 303 cannot preserve and replay the password form POST.
       return reply.code(303).header("Location", target.toString()).send();
@@ -133,19 +136,25 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     const target = new URL(outcome.request.redirectUri);
     target.searchParams.set("code", code);
     if (outcome.request.state !== undefined) target.searchParams.set("state", outcome.request.state);
+    target.searchParams.set("iss", issuer);
     request.log.info({
       event: "oauth.authorization.redirect",
-      status: 303,
+      corrId,
+      status: 200,
+      mode: "interstitial",
       redirectHost: target.hostname,
       redirectPath: target.pathname,
       hasCode: true,
       hasState: outcome.request.state !== undefined,
-      hasIssuer: false,
+      hasIssuer: true,
       hasResource: outcome.request.resource !== undefined,
       hasPkce: Boolean(outcome.request.codeChallenge),
       clientIdType: outcome.request.clientId.startsWith("https://") ? "metadata_document" : "dynamic"
     }, "OAuth authorization response issued");
-    return reply.code(303).header("Location", target.toString()).send();
+    // Rendered hand-off page instead of a bare 303: the bare redirect was
+    // being silently dropped in the operator's browser (see renderRedirectPage).
+    reply.header("Content-Security-Policy", "default-src 'none'; base-uri 'none'; script-src 'unsafe-inline'");
+    return reply.type("text/html").send(renderRedirectPage(target.toString(), gatewayDisplayName));
   });
 
   app.post("/oauth/token", async (request, reply) => {
@@ -158,6 +167,7 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
     const responseBody = result.body as { error?: unknown } | undefined;
     request.log.info({
       event: "oauth.token.request",
+      corrId: typeof body.corr_id === "string" && body.corr_id.length > 0 ? body.corr_id : undefined,
       status: result.status,
       grantType: body.grant_type === "authorization_code" || body.grant_type === "refresh_token" ? body.grant_type : "unsupported",
       hasCode: Boolean(body.code),
@@ -166,7 +176,8 @@ export function registerOAuthRoutes(app: FastifyInstance, deps: OAuthRoutesDeps)
       hasResource: Boolean(body.resource),
       hasCodeVerifier: Boolean(body.code_verifier),
       clientIdType: body.client_id?.startsWith("https://") ? "metadata_document" : body.client_id ? "dynamic" : "missing",
-      oauthError: typeof responseBody?.error === "string" ? responseBody.error : undefined
+      oauthError: typeof responseBody?.error === "string" ? responseBody.error : undefined,
+      rejectReason: result.reason
     }, "OAuth token request handled");
     return reply.code(result.status).send(result.body);
   });
