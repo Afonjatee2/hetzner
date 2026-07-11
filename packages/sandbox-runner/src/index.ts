@@ -55,7 +55,14 @@ let rootlessDocker: Promise<boolean> | undefined;
 
 function isRootlessDocker(): Promise<boolean> {
   rootlessDocker ??= docker(["info", "--format", "{{json .SecurityOptions}}"])
-    .then((options) => options.includes("name=rootless"));
+    .then((options) => options.includes("name=rootless"))
+    .catch((error: unknown) => {
+      // A failed probe (e.g. OrbStack not started yet) must not be cached:
+      // a rejected promise here poisoned every later task with a stale
+      // "cannot connect to docker.sock" error even after the engine came up.
+      rootlessDocker = undefined;
+      throw error;
+    });
   return rootlessDocker;
 }
 
