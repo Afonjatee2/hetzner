@@ -10,10 +10,18 @@ if [[ $# -ne 1 || ! -f "$1" ]]; then
   exit 64
 fi
 
-id gptsync >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin gptsync
+id gptsync >/dev/null 2>&1 || useradd --system --create-home --shell /bin/bash gptsync
+usermod --shell /bin/bash gptsync
 install -d -o gptsync -g gptdev -m 2770 /var/lib/gpt-dev/handoffs /var/lib/gpt-dev/handoffs/incoming
 install -d -o root -g root -m 0755 /opt/hetzner-dev-workspace/infra/scripts
-install -o root -g root -m 0755 infra/scripts/receive-handoff.sh /opt/hetzner-dev-workspace/infra/scripts/receive-handoff.sh
+receiver=$(realpath infra/scripts/receive-handoff.sh)
+target=/opt/hetzner-dev-workspace/infra/scripts/receive-handoff.sh
+if [[ "$receiver" != "$target" ]]; then
+  install -o root -g root -m 0755 "$receiver" "$target"
+else
+  chown root:root "$target"
+  chmod 0755 "$target"
+fi
 install -d -o gptsync -g gptsync -m 0700 /home/gptsync/.ssh
 key=$(<"$1")
 restriction='restrict,command="/opt/hetzner-dev-workspace/infra/scripts/receive-handoff.sh"'
