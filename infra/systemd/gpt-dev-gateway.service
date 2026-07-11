@@ -11,6 +11,7 @@ WorkingDirectory=/opt/hetzner-dev-workspace
 EnvironmentFile=/etc/gpt-dev/gateway.env
 Environment=HOME=/var/lib/gpt-dev
 Environment=DOCKER_CONFIG=/var/lib/gpt-dev/docker-config
+Environment=HANDOFF_INBOX_DIR=/var/lib/gpt-dev/handoffs/incoming
 ExecStart=/usr/bin/node apps/mcp-gateway/dist/server.js
 Restart=on-failure
 RestartSec=5
