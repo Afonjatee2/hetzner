@@ -2,7 +2,7 @@ const CHATGPT_HOST = "chatgpt.com";
 const CHATGPT_LEGACY_PATH = "/connector_platform_oauth_redirect";
 const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
 
-const PERPLEXITY_HOST = "www.perplexity.ai";
+const PERPLEXITY_HOSTS = new Set(["www.perplexity.ai", "www.perplexity.com"]);
 const PERPLEXITY_CALLBACK_PATH = "/rest/connections/oauth_callback";
 
 function isSecureOrigin(url: URL): boolean {
@@ -16,11 +16,11 @@ function isAllowedChatGptRedirect(url: URL): boolean {
 }
 
 function isAllowedPerplexityRedirect(url: URL): boolean {
-  return url.hostname === PERPLEXITY_HOST && url.pathname === PERPLEXITY_CALLBACK_PATH;
+  return PERPLEXITY_HOSTS.has(url.hostname) && url.pathname === PERPLEXITY_CALLBACK_PATH;
 }
 
 export function isAllowedHost(url: URL): boolean {
-  return isSecureOrigin(url) && (url.hostname === CHATGPT_HOST || url.hostname === PERPLEXITY_HOST);
+  return isSecureOrigin(url) && (url.hostname === CHATGPT_HOST || PERPLEXITY_HOSTS.has(url.hostname));
 }
 
 export function isAllowedRedirectUri(value: string): boolean {
