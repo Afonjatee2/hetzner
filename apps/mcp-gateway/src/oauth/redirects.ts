@@ -2,7 +2,11 @@ const CHATGPT_HOST = "chatgpt.com";
 const CHATGPT_LEGACY_PATH = "/connector_platform_oauth_redirect";
 const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
 
-const PERPLEXITY_HOSTS = new Set(["www.perplexity.ai", "www.perplexity.com"]);
+const PERPLEXITY_HOSTS = new Set([
+  "www.perplexity.ai",
+  "www.perplexity.com",
+  "enterprise.perplexity.ai"
+]);
 const PERPLEXITY_CALLBACK_PATH = "/rest/connections/oauth_callback";
 
 function isSecureOrigin(url: URL): boolean {
