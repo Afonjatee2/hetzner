@@ -90,6 +90,9 @@ importers:
       '@gpt-dev/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      '@gpt-dev/skills-service':
+        specifier: workspace:*
+        version: link:../../packages/skills-service
       '@gpt-dev/task-service':
         specifier: workspace:*
         version: link:../../packages/task-service
@@ -163,6 +166,15 @@ importers:
         version: link:../schemas
 
   packages/schemas: {}
+
+  packages/skills-service:
+    dependencies:
+      '@gpt-dev/projects':
+        specifier: workspace:*
+        version: link:../projects
+      '@gpt-dev/schemas':
+        specifier: workspace:*
+        version: link:../schemas
 
   packages/task-service:
     dependencies:

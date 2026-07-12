@@ -10,6 +10,7 @@ import { HandoffInbox, HandoffSender } from "@gpt-dev/handoff-service";
 import { WorkspaceDatabase } from "@gpt-dev/persistence";
 import { ProjectService } from "@gpt-dev/projects";
 import { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
+import { SkillsService } from "@gpt-dev/skills-service";
 import { TaskService } from "@gpt-dev/task-service";
 import { AuthService } from "./auth.js";
 import { loadConfig } from "./config.js";
@@ -39,8 +40,9 @@ const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && co
     })
   : undefined;
 const handoffInbox = config.handoffInboxDir ? new HandoffInbox(config.handoffInboxDir, config.workspaceRoot) : undefined;
+const skills = config.skillsRoot ? new SkillsService(config.skillsRoot) : undefined;
 const interrupted = tasks.reconcileInterrupted();
-const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers, handoffSender, handoffInbox };
+const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers, handoffSender, handoffInbox, skills };
 const firstPartySigningKey = config.AUTH_MODE === "first-party" ? await loadOrCreateSigningKey(config.signingKeyPath) : undefined;
 const auth = new AuthService(config, firstPartySigningKey ? [firstPartySigningKey] : undefined);
 // Only trust X-Forwarded-For from loopback: cloudflared (or any local reverse

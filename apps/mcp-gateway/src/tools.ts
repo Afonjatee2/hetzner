@@ -10,6 +10,7 @@ import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { ProjectService } from "@gpt-dev/projects";
 import type { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
 import { ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from "@gpt-dev/schemas";
+import type { SkillsService } from "@gpt-dev/skills-service";
 import type { TaskService } from "@gpt-dev/task-service";
 import type { Config } from "./config.js";
 
@@ -25,6 +26,7 @@ export interface Services {
   devServers: DevServerService;
   handoffSender: HandoffSender | undefined;
   handoffInbox: HandoffInbox | undefined;
+  skills: SkillsService | undefined;
 }
 
 interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
@@ -112,6 +114,20 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), pattern: z.string().min(1).max(512), maxResults: z.number().int().min(1).max(1000).default(200) },
     annotations: { title: "Search code", readOnlyHint: true, openWorldHint: false }
   }, async (input) => safely(services, "search_code", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.search(rootFor(services, input.projectId, input.taskId), input.pattern, input.maxResults)));
+
+  if (services.skills) {
+    server.registerTool("list_skills", {
+      description: "List available skills (markdown playbooks such as report frameworks and house-style guides). Load the relevant skill BEFORE starting a matching task; the optional query filters on name and description.",
+      inputSchema: { query: z.string().min(1).max(200).optional() },
+      annotations: { title: "List skills", readOnlyHint: true, openWorldHint: false }
+    }, async (input) => safely(services, "list_skills", {}, () => services.skills!.list(input.query)));
+
+    server.registerTool("load_skill", {
+      description: "Load a skill's SKILL.md playbook (returns its support-file listing too), or pass `file` to read a specific text support file (specs, configs, themes) from the skill folder.",
+      inputSchema: { name: z.string().min(1).max(200), file: RelativePath.optional() },
+      annotations: { title: "Load skill", readOnlyHint: true, openWorldHint: false }
+    }, async (input) => safely(services, "load_skill", { detail: { skill: input.name, ...(input.file ? { file: input.file } : {}) } }, () => services.skills!.load(input.name, input.file)));
+  }
 
   server.registerTool("create_task_worktree", {
     description: "Create an isolated Git branch and worktree for a coding task. Canonical checkouts are not modified.",
