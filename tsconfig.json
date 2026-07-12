@@ -8,6 +8,7 @@
     { "path": "./packages/git-service" },
     { "path": "./packages/artifact-service" },
     { "path": "./packages/sandbox-runner" },
+    { "path": "./packages/skills-service" },
     { "path": "./packages/task-service" },
     { "path": "./packages/browser-service" },
     { "path": "./packages/handoff-service" },
