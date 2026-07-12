@@ -7,31 +7,43 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com/connector/oauth/abc123")).toBe(true);
   });
 
-  it("rejects http", () => {
-    expect(isAllowedRedirectUri("http://chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
+  it("accepts the exact Perplexity OAuth callback", () => {
+    expect(isAllowedRedirectUri("https://www.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
   });
 
-  it("rejects subdomains", () => {
+  it("rejects http", () => {
+    expect(isAllowedRedirectUri("http://chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
+    expect(isAllowedRedirectUri("http://www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
+  });
+
+  it("rejects subdomains and alternate Perplexity hosts", () => {
     expect(isAllowedRedirectUri("https://sub.chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
+    expect(isAllowedRedirectUri("https://perplexity.ai/rest/connections/oauth_callback")).toBe(false);
+    expect(isAllowedRedirectUri("https://sub.www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects lookalike hosts", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com.evil.com/connector_platform_oauth_redirect")).toBe(false);
+    expect(isAllowedRedirectUri("https://www.perplexity.ai.evil.com/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects userinfo tricks", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com@evil.com/connector_platform_oauth_redirect")).toBe(false);
     expect(isAllowedRedirectUri("https://user:pass@chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
+    expect(isAllowedRedirectUri("https://www.perplexity.ai@evil.com/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects wrong paths", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com/wrong-path")).toBe(false);
     expect(isAllowedRedirectUri("https://chatgpt.com/connector/oauthx")).toBe(false);
     expect(isAllowedRedirectUri("https://chatgpt.com/connector/oauth/")).toBe(false);
+    expect(isAllowedRedirectUri("https://www.perplexity.ai/rest/connections/oauth_callback/extra")).toBe(false);
+    expect(isAllowedRedirectUri("https://www.perplexity.ai/oauth_callback")).toBe(false);
   });
 
   it("rejects non-default ports", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com:8443/connector_platform_oauth_redirect")).toBe(false);
+    expect(isAllowedRedirectUri("https://www.perplexity.ai:8443/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects garbage", () => {

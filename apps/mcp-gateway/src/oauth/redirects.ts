@@ -1,9 +1,26 @@
-const ALLOWED_HOST = "chatgpt.com";
-const LEGACY_PATH = "/connector_platform_oauth_redirect";
-const CALLBACK_PREFIX = "/connector/oauth/";
+const CHATGPT_HOST = "chatgpt.com";
+const CHATGPT_LEGACY_PATH = "/connector_platform_oauth_redirect";
+const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
+
+const PERPLEXITY_HOST = "www.perplexity.ai";
+const PERPLEXITY_CALLBACK_PATH = "/rest/connections/oauth_callback";
+
+function isSecureOrigin(url: URL): boolean {
+  return url.protocol === "https:" && url.username === "" && url.password === "" && url.port === "";
+}
+
+function isAllowedChatGptRedirect(url: URL): boolean {
+  if (url.hostname !== CHATGPT_HOST) return false;
+  if (url.pathname === CHATGPT_LEGACY_PATH) return true;
+  return url.pathname.startsWith(CHATGPT_CALLBACK_PREFIX) && url.pathname.length > CHATGPT_CALLBACK_PREFIX.length;
+}
+
+function isAllowedPerplexityRedirect(url: URL): boolean {
+  return url.hostname === PERPLEXITY_HOST && url.pathname === PERPLEXITY_CALLBACK_PATH;
+}
 
 export function isAllowedHost(url: URL): boolean {
-  return url.protocol === "https:" && url.hostname === ALLOWED_HOST && url.username === "" && url.password === "" && url.port === "";
+  return isSecureOrigin(url) && (url.hostname === CHATGPT_HOST || url.hostname === PERPLEXITY_HOST);
 }
 
 export function isAllowedRedirectUri(value: string): boolean {
@@ -13,7 +30,6 @@ export function isAllowedRedirectUri(value: string): boolean {
   } catch {
     return false;
   }
-  if (!isAllowedHost(url)) return false;
-  if (url.pathname === LEGACY_PATH) return true;
-  return url.pathname.startsWith(CALLBACK_PREFIX) && url.pathname.length > CALLBACK_PREFIX.length;
+  if (!isSecureOrigin(url)) return false;
+  return isAllowedChatGptRedirect(url) || isAllowedPerplexityRedirect(url);
 }
