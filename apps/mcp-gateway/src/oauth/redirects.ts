@@ -5,7 +5,8 @@ const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
 const PERPLEXITY_HOSTS = new Set([
   "www.perplexity.ai",
   "www.perplexity.com",
-  "enterprise.perplexity.ai"
+  "enterprise.perplexity.ai",
+  "enterprise.perplexity.com"
 ]);
 const PERPLEXITY_CALLBACK_PATH = "/rest/connections/oauth_callback";
 

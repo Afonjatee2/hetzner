@@ -11,6 +11,7 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("https://www.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
     expect(isAllowedRedirectUri("https://www.perplexity.com/rest/connections/oauth_callback")).toBe(true);
     expect(isAllowedRedirectUri("https://enterprise.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://enterprise.perplexity.com/rest/connections/oauth_callback")).toBe(true);
   });
 
   it("rejects http", () => {
@@ -18,6 +19,7 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("http://www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("http://www.perplexity.com/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("http://enterprise.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
+    expect(isAllowedRedirectUri("http://enterprise.perplexity.com/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects subdomains and alternate Perplexity hosts", () => {
@@ -27,6 +29,7 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("https://sub.www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("https://sub.www.perplexity.com/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
+    expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.com/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects lookalike hosts", () => {
@@ -34,6 +37,7 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("https://www.perplexity.ai.evil.com/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("https://www.perplexity.com.evil.com/rest/connections/oauth_callback")).toBe(false);
     expect(isAllowedRedirectUri("https://enterprise.perplexity.ai.evil.com/rest/connections/oauth_callback")).toBe(false);
+    expect(isAllowedRedirectUri("https://enterprise.perplexity.com.evil.com/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects userinfo tricks", () => {
