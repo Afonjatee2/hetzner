@@ -9,7 +9,7 @@ import { GitService } from "@gpt-dev/git-service";
 import { HandoffInbox, HandoffSender } from "@gpt-dev/handoff-service";
 import { WorkspaceDatabase } from "@gpt-dev/persistence";
 import { ProjectService } from "@gpt-dev/projects";
-import { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
+import { DockerSandboxRunner, HostProcessRunner } from "@gpt-dev/sandbox-runner";
 import { SkillsService } from "@gpt-dev/skills-service";
 import { TaskService } from "@gpt-dev/task-service";
 import { AuthService } from "./auth.js";
@@ -27,7 +27,10 @@ const projects = new ProjectService(database, config.workspaceRoot);
 const git = new GitService(config.worktreeRoot);
 const runner = new DockerSandboxRunner();
 const artifacts = new ArtifactService(database, config.artifactDir);
-const tasks = new TaskService(database, runner, artifacts);
+const hostRunner = config.HOST_EXECUTION === "enabled"
+  ? new HostProcessRunner(config.HOST_PATH_PREPEND ? { pathPrepend: config.HOST_PATH_PREPEND } : {})
+  : undefined;
+const tasks = new TaskService(database, runner, artifacts, hostRunner);
 const browser = new BrowserService();
 const devServers = new DevServerService(database);
 const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && config.handoffSshKeyPath && config.handoffKnownHostsPath

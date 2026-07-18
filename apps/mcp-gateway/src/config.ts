@@ -20,6 +20,8 @@ const Environment = z.object({
   TASK_DEFAULT_MEMORY: z.string().regex(/^\d+[kmg]$/i).default("2g"),
   TASK_DEFAULT_CPUS: z.coerce.number().positive().max(64).default(2),
   TASK_DEFAULT_PIDS: z.coerce.number().int().min(16).max(32768).default(256),
+  HOST_EXECUTION: z.enum(["disabled", "enabled"]).default("disabled"),
+  HOST_PATH_PREPEND: z.string().optional(),
   AUTH_MODE: z.enum(["development", "oauth", "first-party"]).default("development"),
   OAUTH_ISSUER: z.string().optional(),
   OAUTH_AUDIENCE: z.string().optional(),

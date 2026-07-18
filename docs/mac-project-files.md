@@ -32,6 +32,12 @@ File tools exclude `.git`, `.ssh`, `.aws`, `.gnupg`, `.kube`, `.env` variants, p
 7. Configure a separate Cloudflare Tunnel hostname, `mac-mcp.remoteconnector.uk`, to `http://127.0.0.1:8082`.
 8. Add a ChatGPT connector named **Mac Project Files** pointing to `https://mac-mcp.remoteconnector.uk/mcp`.
 
+## Host execution
+
+By default `run_command` executes inside a disposable Linux container with networking disabled. That sandbox cannot run the Mac's own toolchain (Bun, Electron, DMG packaging, GUI apps). With `HOST_EXECUTION=enabled` in `gateway.env`, clients may pass `mode: "host"` to `run_command` and the command runs directly on macOS in the task worktree — like Codex or Claude Code would — with full network access and the operator PATH from `HOST_PATH_PREPEND` (Bun, Homebrew, npm globals).
+
+Host tasks keep the same guardrails as container tasks: they only run in registered-project task worktrees, they are recorded as tasks with redacted cursor logs and byte-capped output, timeouts kill the whole process group, and `cancel_task` works. The child environment is built from scratch (HOME, USER, PATH, `GPTDEV_ARTIFACTS_DIR`) so gateway OAuth and handoff secrets are never inherited. Without the opt-in flag, `mode: "host"` returns FORBIDDEN. `system_health` reports whether host execution is enabled.
+
 ## Handoff workflow
 
 The normal ChatGPT workflow is now deliberately short:

@@ -83,6 +83,7 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: {}, annotations: { title: "System health", readOnlyHint: true, openWorldHint: false }
   }, async () => safely(services, "system_health", {}, async () => ({
     gateway: "ok", database: services.database.db.prepare("SELECT 1 AS ok").get(), docker: await services.runner.health(),
+    hostExecution: services.config.HOST_EXECUTION,
     workspaceRoot: services.config.workspaceRoot, architecture: process.arch, uptimeSeconds: Math.floor(process.uptime())
   })));
 
@@ -207,16 +208,20 @@ export function createMcpServer(services: Services): McpServer {
   }
 
   server.registerTool("run_command", {
-    description: "Start an asynchronous command inside a constrained disposable container mounted only to the task worktree and artifacts. Network is disabled by default.",
+    description: "Start an asynchronous command in the task worktree. mode:'container' (default) runs inside a constrained disposable container with network disabled. mode:'host' (requires the operator to enable HOST_EXECUTION) runs directly on the host with the operator's toolchain (node, bun, pnpm, git), full network access and GUI capability — use it for dependency installs, dev servers, native/Electron builds and anything a normal terminal could do. Poll get_task and read_task_logs for progress.",
     inputSchema: RunCommandInput,
-    annotations: { title: "Run sandboxed command", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
-  }, async (input) => safely(services, "run_command", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}), networked: input.network !== "none" }, async () => {
+    annotations: { title: "Run command", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "run_command", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}), networked: input.mode === "host" || input.network !== "none", detail: { mode: input.mode } }, async () => {
     if (!input.taskId) throw new WorkspaceError("VALIDATION", "taskId is required for execution");
+    if (input.mode === "host" && services.config.HOST_EXECUTION !== "enabled") {
+      throw new WorkspaceError("FORBIDDEN", "Host execution is disabled. The operator must set HOST_EXECUTION=enabled in the gateway environment.");
+    }
     const project = services.projects.get(input.projectId);
     const tree = worktree(services.database, input.projectId, input.taskId);
     const timeoutSeconds = Math.min(input.timeoutSeconds ?? services.config.TASK_DEFAULT_TIMEOUT_SECONDS, services.config.TASK_MAX_TIMEOUT_SECONDS);
     const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
-    return services.tasks.start({ worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path, image: input.image ?? defaultImage,
+    return services.tasks.start({ worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
+      image: input.mode === "host" ? "host" : input.image ?? defaultImage, mode: input.mode,
       executable: input.executable, args: input.args, network: input.network,
       limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS, timeoutSeconds, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
     });

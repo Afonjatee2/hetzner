@@ -36,6 +36,13 @@ export interface SandboxCallbacks {
   onLog(stream: "stdout" | "stderr", content: string): void;
 }
 
+export interface TaskRunner {
+  run(request: SandboxRequest, callbacks: SandboxCallbacks): Promise<SandboxResult>;
+  cancel(taskId: string): Promise<void>;
+}
+
+export { HostProcessRunner, type HostRunnerOptions } from "./host.js";
+
 async function docker(args: string[], allowFailure = false): Promise<string> {
   return await new Promise((resolvePromise, reject) => {
     const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -66,7 +73,7 @@ function isRootlessDocker(): Promise<boolean> {
   return rootlessDocker;
 }
 
-export class DockerSandboxRunner {
+export class DockerSandboxRunner implements TaskRunner {
   private readonly active = new Map<string, string>();
 
   async health(): Promise<{ ok: boolean; version?: string; error?: string }> {

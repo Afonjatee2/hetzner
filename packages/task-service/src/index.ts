@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { ArtifactService } from "@gpt-dev/artifact-service";
 import { redactSecrets } from "@gpt-dev/audit-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
-import type { DockerSandboxRunner, SandboxLimits } from "@gpt-dev/sandbox-runner";
-import type { NetworkMode, TaskStatus } from "@gpt-dev/schemas";
+import type { SandboxLimits, TaskRunner } from "@gpt-dev/sandbox-runner";
+import type { ExecutionMode, NetworkMode, TaskStatus } from "@gpt-dev/schemas";
 import { WorkspaceError } from "@gpt-dev/schemas";
 
 export interface TaskRecord {
@@ -31,6 +31,7 @@ export interface StartTaskInput {
   args: string[];
   network: NetworkMode;
   networkName?: string;
+  mode?: ExecutionMode;
   limits: SandboxLimits;
 }
 
@@ -40,9 +41,16 @@ export class TaskService {
 
   constructor(
     private readonly database: WorkspaceDatabase,
-    private readonly runner: DockerSandboxRunner,
-    private readonly artifacts: ArtifactService
+    private readonly runner: TaskRunner,
+    private readonly artifacts: ArtifactService,
+    private readonly hostRunner?: TaskRunner
   ) {}
+
+  private runnerFor(mode: ExecutionMode | undefined): TaskRunner {
+    if (mode !== "host") return this.runner;
+    if (!this.hostRunner) throw new WorkspaceError("FORBIDDEN", "Host execution is not enabled on this gateway");
+    return this.hostRunner;
+  }
 
   reconcileInterrupted(): number {
     const result = this.database.db.prepare(`
@@ -73,7 +81,7 @@ export class TaskService {
     try {
       update("preparing", { started_at: new Date().toISOString() });
       const artifactPath = await this.artifacts.taskDirectory(taskId);
-      const result = await this.runner.run({ ...input, taskId, artifactPath }, {
+      const result = await this.runnerFor(input.mode).run({ ...input, taskId, artifactPath }, {
         onContainer: (containerId) => update("running", { container_id: containerId }),
         onLog: (stream, content) => {
           sequence += 1;
@@ -141,7 +149,8 @@ export class TaskService {
     const task = this.get(taskId);
     if (task.status !== "running" && task.status !== "preparing") throw new WorkspaceError("CONFLICT", "Task is not cancellable");
     this.cancellationRequested.add(taskId);
-    await this.runner.cancel(taskId);
+    // Host tasks are recorded with the sentinel image "host" (they have no container image).
+    await this.runnerFor(task.image === "host" ? "host" : "container").cancel(taskId);
     this.database.db.prepare("UPDATE tasks SET status='cancelled', finished_at=? WHERE id=?").run(new Date().toISOString(), taskId);
     return this.get(taskId);
   }

@@ -1,40 +1,62 @@
-# Skills tools for the MCP gateway
+# Host execution mode for the Mac connector
 
-Goal: expose read-only "skills" (markdown playbooks + support files, e.g. the Genesis
-report-design-system) to any MCP client (ChatGPT web, Claude) via two lean tools.
+Problem: run_command always executes in a disposable Linux Docker container
+(network none, node image without Bun, no GUI). ChatGPT could not run
+`bun install`, `bun run dev:desktop` (Electron) or build a DMG on the Mac.
+Goal: make the connector behave like Codex/Claude Code — commands run directly
+on macOS with the operator's toolchain — behind an explicit operator opt-in.
 
 Acceptance criteria
-- `list_skills` returns every skill under SKILLS_ROOT (a skill = a folder containing SKILL.md
-  with frontmatter name/description), discovered recursively to depth 4. Optional `query`
-  filters on name/description.
-- `load_skill { name }` returns the SKILL.md body + a bounded listing of the skill folder's files.
-- `load_skill { name, file }` returns a support file (text types only), realpath-contained
-  inside the skill folder, protected-path rules applied, size-capped.
-- Tools registered only when SKILLS_ROOT is configured; audited via existing safely() wrapper.
-- pnpm check + vitest pass.
+- `run_command { mode: "host" }` runs the executable directly on macOS in the
+  task worktree, with the operator PATH (bun/node/pnpm/homebrew), full network,
+  GUI-capable (Aqua session via LaunchAgent).
+- Gated: only when `HOST_EXECUTION=enabled` in gateway.env; otherwise FORBIDDEN
+  with an actionable message. Default stays container mode — nothing changes
+  for existing callers.
+- Same task model as containers: async task record, redacted cursor logs,
+  output byte cap, timeout kill (SIGTERM → SIGKILL of the whole process
+  group), cancel_task works, artifacts dir exposed via GPTDEV_ARTIFACTS_DIR.
+- pnpm check green; end-to-end proof: MCP client call runs `bun --version`
+  in host mode through a dev-mode gateway instance.
+- Production LaunchAgent restarted with host execution enabled; /healthz ok.
 
 Plan
-- [x] Branch feat/skills-tools
-- [x] packages/skills-service (SkillsService: discover/list/load; reuses resolveContained +
-      isProtectedPath from @gpt-dev/projects; realpath-normalised root for macOS /var symlink)
-- [x] config.ts: optional SKILLS_ROOT env → resolved skillsRoot
-- [x] server.ts: instantiate SkillsService when configured; add to services
-- [x] tools.ts: register list_skills + load_skill (conditional, read-only, audited)
-- [x] Workspace wiring: root+gateway tsconfig references, gateway dep, pnpm install
-- [x] Tests: 9 new cases (nested discovery, frontmatter, query filter, support files,
-      binary refusal, protected paths, traversal, escape symlink, truncation)
-- [x] pnpm check: lint + typecheck + 90/90 tests green
-- [x] End-to-end MCP smoke test on dev instance (tools listed + list_skills returns real data)
-- [x] Review pass on diff — 2 real findings, both fixed + regression-tested:
-      (1) CRITICAL: symlink with allowed extension pointing at a protected/binary file INSIDE the
-      root leaked content — protection + loadability now re-checked on the RESOLVED realpath;
-      exploit re-run against dist and confirmed blocked (FORBIDDEN).
-      (2) memory DoS: whole file was read before truncation — now bounded read (readBounded) with
-      NUL-byte binary guard, and list() head-reads manifests (8KB) instead of full files.
-      pnpm check green after fixes: 93/93 tests. Gateway restarted on fixed build.
-- [x] Mac deployment: SKILLS_ROOT added to gateway.env, LaunchAgent kickstarted, gateway
-      running on :8082 (401 for unauthenticated probe = auth intact)
-- [ ] Hetzner deployment: same env var + rsync of ~/Downloads/report-design-system content
+- [x] schemas: ExecutionMode enum; RunCommandInput.mode (default "container");
+      raise timeoutSeconds max to 86400 for long-lived host dev servers
+- [x] sandbox-runner: TaskRunner interface + HostProcessRunner (host.ts):
+      direct spawn, detached process group, minimal env + PATH prepend,
+      timeout/output-cap/cancel parity with the Docker runner
+- [x] task-service: optional host runner, dispatch on mode, image="host"
+      marker so cancel picks the right runner
+- [x] gateway config: HOST_EXECUTION (disabled|enabled), HOST_PATH_PREPEND
+- [x] tools.ts: gate host mode, wire through, update run_command +
+      system_health descriptions/output
+- [x] server.ts: construct HostProcessRunner when enabled
+- [x] tests: HostProcessRunner unit tests (success, exit code, timeout,
+      truncation, secret-leak check, cancel, ENOENT) — 8 new, colocated
+- [x] pnpm check (lint + typecheck + 104/104 tests green)
+- [x] e2e: dev-mode gateway + real MCP client: register_project →
+      create_task_worktree → run_command mode:host `bun --version` →
+      succeeded, exit 0, output "1.3.14" (host Bun); container mode still
+      returns v22.23.1 from the image; FORBIDDEN gate verified when
+      HOST_EXECUTION is unset
+- [x] gateway.env: HOST_EXECUTION=enabled + HOST_PATH_PREPEND; pnpm build;
+      LaunchAgent kickstarted; /healthz 200 in ~60ms (5/5), process env
+      confirmed to carry the new flags
+- [x] docs: host-execution section in docs/mac-project-files.md +
+      .env.mac.example
+- [x] commit (only host-execution files; oauth WIP left unstaged)
 
 ## Review
-(fill on completion)
+
+run_command now accepts mode:"host" and executes directly on macOS in the
+task worktree with the operator toolchain (bun 1.3.14, node, pnpm, git), full
+network and GUI capability — this is what ChatGPT needed for `bun install`,
+`bun run dev:desktop` (Electron) and DMG packaging. Container mode is
+unchanged and remains the default. The gate is operator-controlled config,
+not tool input, so a remote model cannot enable it. Host children get a
+from-scratch environment, so gateway OAuth/handoff secrets cannot leak into
+task logs. Long-running dev servers fit the async task model (timeout raised
+to a day, cancel_task kills the process group). Production connector is live
+with the feature; ChatGPT may need the connector refreshed to pick up the new
+run_command schema.
