@@ -134,9 +134,15 @@ const handleMcpRequest = async (request: FastifyRequest, reply: FastifyReply): P
   }
 
   if (!session) {
-    return reply.code(400).send({ jsonrpc: "2.0", error: { code: -32000, message: "Missing or invalid MCP session" }, id: null });
+    // Spec: an unknown/expired mcp-session-id must get 404, which instructs
+    // the client to transparently start a new session with InitializeRequest.
+    // A 400 here left clients (ChatGPT, claude.ai) retrying a dead session
+    // after every gateway restart until the connector was manually refreshed.
+    const statusCode = sessionId ? 404 : 400;
+    return reply.code(statusCode).send({ jsonrpc: "2.0", error: { code: -32000, message: sessionId ? "MCP session not found" : "Missing MCP session" }, id: null });
   }
 
+  reply.raw.setHeader("X-Accel-Buffering", "no");
   reply.hijack();
   await session.transport.handleRequest(request.raw, reply.raw, request.body);
   return undefined;
