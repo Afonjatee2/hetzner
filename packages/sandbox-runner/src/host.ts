@@ -11,7 +11,7 @@ export interface HostRunnerOptions {
 
 const BASE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
-function childEnvironment(pathPrepend: string | undefined, artifactPath: string): NodeJS.ProcessEnv {
+function childEnvironment(pathPrepend: string | undefined, artifactPath: string, extra?: Record<string, string>): NodeJS.ProcessEnv {
   // Deliberately NOT process.env: the gateway environment carries OAuth and
   // handoff secrets that must never leak into task processes or their logs.
   const inherited: NodeJS.ProcessEnv = {};
@@ -22,7 +22,8 @@ function childEnvironment(pathPrepend: string | undefined, artifactPath: string)
   return {
     ...inherited,
     PATH: [pathPrepend, BASE_PATH].filter(Boolean).join(":"),
-    GPTDEV_ARTIFACTS_DIR: artifactPath
+    GPTDEV_ARTIFACTS_DIR: artifactPath,
+    ...extra
   };
 }
 
@@ -39,7 +40,7 @@ export class HostProcessRunner implements TaskRunner {
     const exitCode = await new Promise<number>((resolvePromise, reject) => {
       const child = spawn(request.executable, request.args, {
         cwd: request.worktreePath,
-        env: childEnvironment(this.options.pathPrepend, request.artifactPath),
+        env: childEnvironment(this.options.pathPrepend, request.artifactPath, request.env),
         stdio: ["ignore", "pipe", "pipe"],
         // Own process group so timeout/cancel can kill the whole tree
         // (package managers and dev servers fork aggressively).

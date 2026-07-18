@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod/v4";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createAuditEvent } from "@gpt-dev/audit-service";
@@ -224,6 +226,46 @@ export function createMcpServer(services: Services): McpServer {
       image: input.mode === "host" ? "host" : input.image ?? defaultImage, mode: input.mode,
       executable: input.executable, args: input.args, network: input.network,
       limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS, timeoutSeconds, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
+    });
+  }));
+
+  server.registerTool("execute_plan", {
+    description: "Hand a complete implementation plan to a local coding agent (Claude Code CLI) that executes it autonomously inside the task worktree: it reads the repo, edits files, runs commands and iterates on failures at native speed. One call replaces the per-edit tool loop — write a precise plan (exact files, exact changes, acceptance checks), then poll get_task and read_task_logs (stream-json events) for progress, and review with git_diff before commit_task. backend 'ccr' (default) routes the agent through the local claude-code-router models; 'subscription' uses the operator's own Claude account. Requires the operator to enable HOST_EXECUTION.",
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId,
+      plan: z.string().min(20).max(200_000),
+      backend: z.enum(["ccr", "subscription"]).default("ccr"),
+      model: z.string().max(128).optional(),
+      timeoutSeconds: z.number().int().min(60).max(86400).default(3600)
+    },
+    annotations: { title: "Execute plan with local agent", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "execute_plan", { projectId: input.projectId, taskId: input.taskId, networked: true, detail: { backend: input.backend, planBytes: Buffer.byteLength(input.plan) } }, async () => {
+    if (services.config.HOST_EXECUTION !== "enabled") {
+      throw new WorkspaceError("FORBIDDEN", "Host execution is disabled. The operator must set HOST_EXECUTION=enabled in the gateway environment.");
+    }
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const executionId = randomUUID();
+    const artifactDirectory = await services.artifacts.taskDirectory(executionId);
+    const planPath = join(artifactDirectory, "plan.md");
+    await writeFile(planPath, input.plan, "utf8");
+    const prompt = [
+      `Execute the implementation plan stored at ${planPath}. Read it fully before changing anything.`,
+      "Work only inside the current directory, which is an isolated git worktree for this task.",
+      "Implement the plan exactly, run the acceptance checks it defines, and fix failures until they pass.",
+      "Never run git push, never publish, and never modify files outside the worktree.",
+      "Finish with a concise summary of the changes made and the final check results."
+    ].join(" ");
+    const env: Record<string, string> = input.backend === "ccr"
+      ? { ANTHROPIC_BASE_URL: services.config.AGENT_BACKEND_BASE_URL, ANTHROPIC_API_KEY: services.config.AGENT_BACKEND_API_KEY ?? "local" }
+      : {};
+    return services.tasks.start({
+      executionId, worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
+      image: "host", mode: "host",
+      executable: services.config.AGENT_CLI_PATH,
+      args: ["--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", ...(input.model ? ["--model", input.model] : []), "-p", prompt],
+      network: "none", env,
+      limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS,
+        timeoutSeconds: Math.min(input.timeoutSeconds, services.config.TASK_MAX_TIMEOUT_SECONDS), maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
     });
   }));
 

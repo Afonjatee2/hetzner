@@ -1,3 +1,25 @@
+# execute_plan: planner/executor tool (2026-07-18, follow-up)
+
+Goal: ChatGPT writes one complete plan; a local Claude Code CLI agent executes
+it in the task worktree at native speed via ccr (DeepSeek/Kimi), collapsing the
+slow per-edit MCP loop into a single tool call.
+
+- [x] SandboxRequest/StartTaskInput: optional `env` (host runner only —
+      carries ANTHROPIC_BASE_URL/API_KEY to the agent, never gateway secrets)
+- [x] config: AGENT_CLI_PATH, AGENT_BACKEND_BASE_URL (ccr :3456),
+      AGENT_BACKEND_API_KEY
+- [x] tools.ts: execute_plan (plan → artifact plan.md → claude -p
+      --output-format stream-json --dangerously-skip-permissions in worktree;
+      backend ccr|subscription; gated by HOST_EXECUTION)
+- [x] test: host-runner env passthrough; pnpm check 105/105 green
+- [x] e2e (dev gateway + MCP client): execute_plan ran the real Claude Code
+      CLI through ccr → 4 turns → AGENT_PROOF.txt created in worktree with
+      exact content; git_status shows the change; final stream-json result
+      event parsed cleanly
+- [x] prod: AGENT_BACKEND_API_KEY added to gateway.env, LaunchAgent
+      restarted, /healthz 200, tunnel MCP handshake 401-challenge in 240ms
+- [x] docs + .env.mac.example updated
+
 # Host execution mode for the Mac connector
 
 Problem: run_command always executes in a disposable Linux Docker container

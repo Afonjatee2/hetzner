@@ -32,6 +32,7 @@ export interface StartTaskInput {
   network: NetworkMode;
   networkName?: string;
   mode?: ExecutionMode;
+  env?: Record<string, string>;
   limits: SandboxLimits;
 }
 

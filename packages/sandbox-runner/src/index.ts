@@ -21,6 +21,8 @@ export interface SandboxRequest {
   artifactPath: string;
   network: NetworkMode;
   networkName?: string;
+  /** Extra environment for the child. Honoured by the host runner only. */
+  env?: Record<string, string>;
   limits: SandboxLimits;
 }
 

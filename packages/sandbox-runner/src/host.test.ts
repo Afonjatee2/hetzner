@@ -74,6 +74,16 @@ describe("HostProcessRunner", () => {
     expect(stdout).toContain(`ART=${artifacts}`);
   });
 
+  it("passes per-request environment overrides to the child", async () => {
+    const runner = new HostProcessRunner();
+    const output = collector();
+    await runner.run(request({
+      executable: "/bin/sh", args: ["-c", "echo BASE=$ANTHROPIC_BASE_URL"],
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:3456" }
+    }), output.callbacks);
+    expect(output.logs.map((entry) => entry.content).join("")).toContain("BASE=http://127.0.0.1:3456");
+  });
+
   it("does not leak the gateway environment into the child", async () => {
     process.env.GATEWAY_SUPER_SECRET_MARKER = "leak-check";
     try {

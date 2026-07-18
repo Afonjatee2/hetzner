@@ -38,6 +38,12 @@ By default `run_command` executes inside a disposable Linux container with netwo
 
 Host tasks keep the same guardrails as container tasks: they only run in registered-project task worktrees, they are recorded as tasks with redacted cursor logs and byte-capped output, timeouts kill the whole process group, and `cancel_task` works. The child environment is built from scratch (HOME, USER, PATH, `GPTDEV_ARTIFACTS_DIR`) so gateway OAuth and handoff secrets are never inherited. Without the opt-in flag, `mode: "host"` returns FORBIDDEN. `system_health` reports whether host execution is enabled.
 
+## Planner/executor: execute_plan
+
+`execute_plan` inverts the slow chat-driven loop: the remote model (ChatGPT) writes one complete implementation plan, and a local coding agent (the Claude Code CLI, spawned as a host task in the worktree) executes it autonomously — reading files, editing, running checks and retrying at native speed. The chat client then reads back a single result via `read_task_logs` (stream-json events; the final `result` event carries the summary) and reviews with `git_diff` before `commit_task`.
+
+`backend: "ccr"` (default) points the agent at the local claude-code-router (`AGENT_BACKEND_BASE_URL`, key in `AGENT_BACKEND_API_KEY`), so execution runs on cheap routed models (DeepSeek/Kimi) while the plan supplies the intelligence. `backend: "subscription"` uses the operator's own Claude login instead. The plan is archived as a task artifact (`plan.md`). Requires `HOST_EXECUTION=enabled`; the agent runs with permissions skipped, which is acceptable only because it is confined to an isolated worktree on the operator's own machine.
+
 ## Handoff workflow
 
 The normal ChatGPT workflow is now deliberately short:
