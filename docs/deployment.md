@@ -10,6 +10,14 @@ Run `infra/scripts/preflight.sh` and save output to `docs/evidence/00-discovery.
 
 Clone the private repository to `/opt/hetzner-dev-workspace`, run `pnpm install --frozen-lockfile && pnpm build`, then run `sudo infra/scripts/install-hetzner.sh`. Put secrets only in `/etc/gpt-dev/gateway.env` with owner `root:gptdev` and mode `0640` or stricter.
 
+The installer also runs `infra/scripts/setup-registry-network.sh`, which creates the `gptdev-registry` Docker network and the `GPTDEV_REGISTRY` iptables chain used by `prepare_task`: containers on this network get DNS and HTTPS to registry.npmjs.org (and its tarball CDNs) only; everything else is dropped. The script is idempotent and safe to re-run. On deployments that predate this step, run it manually once:
+
+```bash
+sudo bash infra/scripts/setup-registry-network.sh
+```
+
+The iptables rules do not survive a reboot by themselves. Install `iptables-persistent` and run `netfilter-persistent save` after the rules are applied (and after any change to them).
+
 Required production values include `NODE_ENV=production`, `AUTH_MODE=oauth`, `PUBLIC_BASE_URL`, `OAUTH_ISSUER`, `OAUTH_AUDIENCE` and `OAUTH_JWKS_URI` when using an external authorization server.
 
 ### First-party authorization server
@@ -49,6 +57,8 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -t REGISTRY/gptdev
 ```
 
 Pin production image digests after verification.
+
+After pulling commits that touch `runner-images/`, rebuild the local images with `docker compose --profile images build`; the gateway does not rebuild them itself. A stale `gptdev-runner-node:local` image typically surfaces as Corepack trying to download pnpm inside task containers, which fails because task containers have no network access.
 
 The service is designed for a rootless Docker daemon owned by `gptdev`. In that
 mode container UID 0 maps to the unprivileged host user; task containers still

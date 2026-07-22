@@ -426,6 +426,41 @@ export function createMcpServer(services: Services): McpServer {
     return { number: result.number, url: result.html_url, state: result.state, draft: result.draft, branch: tree.branch, base };
   }));
 
+  server.registerTool("merge_pull_request", {
+    description: "Merge an open GitHub pull request for the project via the GitHub API using GITHUB_TOKEN. Defaults to a squash merge; the head branch is not deleted. Merge permission and required-check failures come back as errors. Requires GITHUB_TOKEN in the gateway environment.",
+    inputSchema: {
+      projectId: ProjectId,
+      pullNumber: z.number().int().min(1),
+      method: z.enum(["merge", "squash", "rebase"]).default("squash"),
+      commitTitle: z.string().min(1).max(256).optional()
+    },
+    annotations: { title: "Merge pull request", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+  }, async (input) => safely(services, "merge_pull_request", { projectId: input.projectId, destructive: true, networked: true, detail: { pullNumber: input.pullNumber, method: input.method } }, async () => {
+    if (!services.config.GITHUB_TOKEN) throw new WorkspaceError("FORBIDDEN", "GITHUB_TOKEN is not configured in the gateway environment");
+    const project = services.projects.get(input.projectId);
+
+    const remoteUrl = await services.git.remoteUrl(project.canonicalPath);
+    const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+    if (!match) throw new WorkspaceError("VALIDATION", `Cannot parse GitHub owner/repo from remote: ${remoteUrl}`);
+    const [, owner, repo] = match;
+
+    const response = await request(`${services.config.GITHUB_API_BASE}/repos/${owner}/${repo}/pulls/${input.pullNumber}/merge`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${services.config.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ merge_method: input.method, ...(input.commitTitle ? { commit_title: input.commitTitle } : {}) })
+    });
+    const result = await response.body.json() as Record<string, unknown>;
+    if (response.statusCode >= 400) {
+      throw new WorkspaceError("EXECUTION_FAILED", `GitHub API ${String(response.statusCode)}: ${JSON.stringify(result)}`);
+    }
+    return { merged: true, sha: result.sha, message: result.message };
+  }));
+
   server.registerTool("commit_task", {
     description: "Stage and commit all task-worktree changes after explicit user approval. Does not push or merge.",
     inputSchema: { projectId: ProjectId, taskId: TaskId, message: z.string().min(1).max(500) },

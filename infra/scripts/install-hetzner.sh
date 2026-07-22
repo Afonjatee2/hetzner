@@ -6,6 +6,8 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates git ripgrep
@@ -17,6 +19,11 @@ install -d -o gptdev -g gptdev -m 0750 /srv/gpt-hosted /srv/gpt-hosted/.worktree
 install -d -o gptsync -g gptdev -m 2770 /var/lib/gpt-dev/handoffs/incoming 2>/dev/null || install -d -o gptdev -g gptdev -m 0750 /var/lib/gpt-dev/handoffs/incoming
 install -d -o root -g gptdev -m 0750 /etc/gpt-dev
 install -d -o gptdev -g gptdev -m 0700 /var/backups/gpt-dev
+
+echo "==> Setting up the gptdev-registry Docker network (registry-only egress for prepare_task)"
+bash "$SCRIPT_DIR/setup-registry-network.sh"
+echo "    Reminder: install iptables-persistent and run 'netfilter-persistent save' so the rules survive reboots."
+
 install -o root -g root -m 0644 infra/systemd/gpt-dev-gateway.service /etc/systemd/system/
 install -o root -g root -m 0644 infra/systemd/gpt-dev-backup.service infra/systemd/gpt-dev-backup.timer /etc/systemd/system/
 systemctl daemon-reload
