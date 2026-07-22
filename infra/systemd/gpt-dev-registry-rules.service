@@ -1,0 +1,12 @@
+[Unit]
+Description=Hetzner Dev Workspace - Registry Network iptables Rules
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/hetzner-dev-workspace/infra/scripts/setup-registry-network.sh
+
+[Install]
+WantedBy=multi-user.target

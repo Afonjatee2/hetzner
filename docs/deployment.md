@@ -16,7 +16,7 @@ The installer also runs `infra/scripts/setup-registry-network.sh`, which creates
 sudo bash infra/scripts/setup-registry-network.sh
 ```
 
-The iptables rules do not survive a reboot by themselves. Install `iptables-persistent` and run `netfilter-persistent save` after the rules are applied (and after any change to them).
+The iptables rules do not survive a reboot by themselves. On Ubuntu 26.04+ the `gpt-dev-registry-rules` systemd service re-applies them after Docker starts on boot. On older systems, install `iptables-persistent` and run `netfilter-persistent save` after the rules are applied (and after any change to them).
 
 Required production values include `NODE_ENV=production`, `AUTH_MODE=oauth`, `PUBLIC_BASE_URL`, `OAUTH_ISSUER`, `OAUTH_AUDIENCE` and `OAUTH_JWKS_URI` when using an external authorization server.
 
