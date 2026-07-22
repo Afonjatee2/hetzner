@@ -133,6 +133,18 @@ export class GitService {
     return { defaultBranch, remote, before, after, changed: before !== after };
   }
 
+  async pushBranch(worktreePath: string, branch: string, remote = "origin"): Promise<{ branch: string; remote: string }> {
+    await this.assertClean(worktreePath, "Task worktree");
+    const actualBranch = await this.currentBranch(worktreePath);
+    if (actualBranch !== branch) throw new WorkspaceError("CONFLICT", `Task worktree is on ${actualBranch}, expected ${branch}`);
+    await git(worktreePath, ["push", "--set-upstream", remote, branch]);
+    return { branch, remote };
+  }
+
+  async remoteUrl(worktreePath: string, remote = "origin"): Promise<string> {
+    return git(worktreePath, ["remote", "get-url", remote]);
+  }
+
   async discard(projectPath: string, worktreePath: string, branch: string): Promise<void> {
     await git(projectPath, ["worktree", "remove", "--force", worktreePath]);
     await git(projectPath, ["branch", "-D", branch]);

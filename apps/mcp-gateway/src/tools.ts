@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod/v4";
+import { request } from "undici";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createAuditEvent } from "@gpt-dev/audit-service";
 import type { ArtifactService } from "@gpt-dev/artifact-service";
@@ -359,6 +360,48 @@ export function createMcpServer(services: Services): McpServer {
     const published = await services.git.promote(project.canonicalPath, tree.path, tree.branch, project.defaultBranch);
     services.database.db.prepare("UPDATE worktrees SET status='published' WHERE task_id=?").run(input.taskId);
     return { commit, ...published };
+  }));
+
+  server.registerTool("create_pull_request", {
+    description: "Push the committed task branch and open a GitHub pull request against the project's default branch. Creates a draft PR by default. Requires GITHUB_TOKEN in the gateway environment.",
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId,
+      title: z.string().min(1).max(256),
+      body: z.string().max(65_536).default(""),
+      draft: z.boolean().default(true),
+      base: z.string().max(128).optional()
+    },
+    annotations: { title: "Create pull request", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "create_pull_request", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
+    if (!services.config.GITHUB_TOKEN) throw new WorkspaceError("FORBIDDEN", "GITHUB_TOKEN is not configured in the gateway environment");
+    const tree = worktreeRecord(services.database, input.projectId, input.taskId);
+    if (tree.status !== "committed") throw new WorkspaceError("CONFLICT", "Only an already committed task can open a pull request");
+    const project = services.projects.get(input.projectId);
+    const base = input.base ?? project.defaultBranch;
+
+    await services.git.pushBranch(tree.path, tree.branch);
+
+    const remoteUrl = await services.git.remoteUrl(tree.path);
+    const match = remoteUrl.match(/github\.com[/:]([^/]+)\/([^/.]+)/);
+    if (!match) throw new WorkspaceError("VALIDATION", `Cannot parse GitHub owner/repo from remote: ${remoteUrl}`);
+    const [, owner, repo] = match;
+
+    const response = await request(`${services.config.GITHUB_API_BASE}/repos/${owner}/${repo}/pulls`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${services.config.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ title: input.title, body: input.body, head: tree.branch, base, draft: input.draft })
+    });
+    const result = await response.body.json() as Record<string, unknown>;
+    if (response.statusCode >= 400) {
+      throw new WorkspaceError("EXECUTION_FAILED", `GitHub API ${String(response.statusCode)}: ${JSON.stringify(result)}`);
+    }
+    services.database.db.prepare("UPDATE worktrees SET status='published' WHERE task_id=?").run(input.taskId);
+    return { number: result.number, url: result.html_url, state: result.state, draft: result.draft, branch: tree.branch, base };
   }));
 
   server.registerTool("commit_task", {
