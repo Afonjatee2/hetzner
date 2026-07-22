@@ -41,7 +41,9 @@ const Environment = z.object({
   HANDOFF_SSH_KNOWN_HOSTS_PATH: z.string().optional(),
   HANDOFF_MAX_BYTES: z.coerce.number().int().min(1_048_576).max(524_288_000).default(104_857_600),
   GITHUB_TOKEN: z.string().optional(),
-  GITHUB_API_BASE: z.string().url().default("https://api.github.com")
+  GITHUB_API_BASE: z.string().url().default("https://api.github.com"),
+  PNPM_STORE_DIR: z.string().optional(),
+  REGISTRY_NETWORK_NAME: z.string().default("gptdev-registry")
 });
 
 export type Config = ReturnType<typeof loadConfig>;

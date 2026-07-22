@@ -33,6 +33,7 @@ export interface StartTaskInput {
   networkName?: string;
   mode?: ExecutionMode;
   env?: Record<string, string>;
+  extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>;
   limits: SandboxLimits;
 }
 

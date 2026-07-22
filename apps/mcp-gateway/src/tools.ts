@@ -210,6 +210,28 @@ export function createMcpServer(services: Services): McpServer {
     }));
   }
 
+  server.registerTool("prepare_task", {
+    description: "Install project dependencies inside the task worktree container using the registry-only network and a persistent pnpm store volume. Run this before run_command checks (lint, typecheck, test) so node_modules exists. Requires PNPM_STORE_DIR to be configured.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId, timeoutSeconds: z.number().int().min(30).max(3600).default(600) },
+    annotations: { title: "Prepare task dependencies", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "prepare_task", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
+    if (!services.config.PNPM_STORE_DIR) throw new WorkspaceError("FORBIDDEN", "PNPM_STORE_DIR is not configured in the gateway environment");
+    const tree = worktree(services.database, input.projectId, input.taskId);
+    const project = services.projects.get(input.projectId);
+    const image = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
+    const executable = project.runtime === "python" ? "pip" : "pnpm";
+    const args = project.runtime === "python"
+      ? ["install", "-r", "requirements.txt", "--quiet"]
+      : ["install", "--frozen-lockfile", "--store-dir", "/pnpm-store"];
+    const timeoutSeconds = Math.min(input.timeoutSeconds, services.config.TASK_MAX_TIMEOUT_SECONDS);
+    return services.tasks.start({
+      worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
+      image, executable, args, network: "registry",
+      extraMounts: [{ source: services.config.PNPM_STORE_DIR, target: "/pnpm-store" }],
+      limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS, timeoutSeconds, maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
+    });
+  }));
+
   server.registerTool("run_command", {
     description: "Start an asynchronous command in the task worktree. mode:'container' (default) runs inside a constrained disposable container with network disabled. mode:'host' (requires the operator to enable HOST_EXECUTION) runs directly on the host with the operator's toolchain (node, bun, pnpm, git), full network access and GUI capability — use it for dependency installs, dev servers, native/Electron builds and anything a normal terminal could do. Poll get_task and read_task_logs for progress.",
     inputSchema: RunCommandInput,

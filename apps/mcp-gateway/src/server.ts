@@ -25,7 +25,7 @@ const config = loadConfig();
 const database = new WorkspaceDatabase(config.databasePath);
 const projects = new ProjectService(database, config.workspaceRoot);
 const git = new GitService(config.worktreeRoot);
-const runner = new DockerSandboxRunner();
+const runner = new DockerSandboxRunner({ registryNetworkName: config.REGISTRY_NETWORK_NAME });
 const artifacts = new ArtifactService(database, config.artifactDir);
 const hostRunner = config.HOST_EXECUTION === "enabled"
   ? new HostProcessRunner(config.HOST_PATH_PREPEND ? { pathPrepend: config.HOST_PATH_PREPEND } : {})

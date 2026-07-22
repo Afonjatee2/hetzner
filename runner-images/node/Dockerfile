@@ -6,9 +6,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ripgrep ca-
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable \
     && npm install -g --force pnpm@10 typescript \
-    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin runner
+    && useradd --uid 10001 --create-home --shell /usr/sbin/nologin runner \
+    && mkdir -p /pnpm-store && chown 10001:10001 /pnpm-store
 USER 10001:10001
 WORKDIR /workspace
-ENV CI=true HOME=/home/runner
+ENV CI=true HOME=/home/runner PNPM_STORE_DIR=/pnpm-store
 CMD ["node", "--version"]
 

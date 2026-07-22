@@ -23,6 +23,8 @@ export interface SandboxRequest {
   networkName?: string;
   /** Extra environment for the child. Honoured by the host runner only. */
   env?: Record<string, string>;
+  /** Extra bind/volume mounts (e.g. pnpm store). */
+  extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>;
   limits: SandboxLimits;
 }
 
@@ -77,6 +79,11 @@ function isRootlessDocker(): Promise<boolean> {
 
 export class DockerSandboxRunner implements TaskRunner {
   private readonly active = new Map<string, string>();
+  private readonly registryNetworkName: string;
+
+  constructor(options: { registryNetworkName?: string } = {}) {
+    this.registryNetworkName = options.registryNetworkName ?? "gptdev-registry";
+  }
 
   async health(): Promise<{ ok: boolean; version?: string; error?: string }> {
     try {
@@ -87,9 +94,6 @@ export class DockerSandboxRunner implements TaskRunner {
   }
 
   async run(request: SandboxRequest, callbacks: SandboxCallbacks): Promise<SandboxResult> {
-    if (request.network === "registry") {
-      throw new WorkspaceError("FORBIDDEN", "Registry-only task networking is not configured");
-    }
     if (request.network === "restricted" && !request.networkName?.match(/^gptdev-preview-[a-f0-9-]{36}$/)) {
       throw new WorkspaceError("FORBIDDEN", "Restricted networking requires a task-specific preview network");
     }
@@ -101,9 +105,12 @@ export class DockerSandboxRunner implements TaskRunner {
     const uid = rootless ? 0 : typeof workspaceStat.uid === "number" ? workspaceStat.uid : 1000;
     const gid = rootless ? 0 : typeof workspaceStat.gid === "number" ? workspaceStat.gid : 1000;
     const name = `gptdev-${request.taskId}`;
+    const networkTarget = request.network === "registry"
+      ? this.registryNetworkName
+      : request.network === "restricted" ? request.networkName! : "none";
     const createArgs = [
       "create", "--name", name,
-      "--network", request.network === "restricted" ? request.networkName! : "none",
+      "--network", networkTarget,
       "--read-only",
       "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges:true",
@@ -116,6 +123,7 @@ export class DockerSandboxRunner implements TaskRunner {
       "--workdir", "/workspace",
       "--mount", `type=bind,source=${request.worktreePath},target=/workspace`,
       "--mount", `type=bind,source=${request.artifactPath},target=/artifacts`,
+      ...(request.extraMounts ?? []).flatMap((m) => ["--mount", `type=bind,source=${m.source},target=${m.target}${m.readOnly ? ",readonly" : ""}`]),
       request.image,
       request.executable,
       ...request.args
