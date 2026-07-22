@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ssh *)",
+      "Bash(pnpm lint *)",
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm test *)",
+      "Bash(node tests/e2e/oauth-acceptance.mjs)",
+      "Bash(node tests/e2e/local-acceptance.mjs)",
+      "Bash(rsync -az apps/mcp-gateway/src/server.ts tests/e2e/oauth-acceptance.mjs root@167.233.75.192:/opt/hetzner-dev-workspace/_incoming/)"
+    ]
+  }
+}

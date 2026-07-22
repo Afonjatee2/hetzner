@@ -2,12 +2,20 @@ const CHATGPT_HOST = "chatgpt.com";
 const CHATGPT_LEGACY_PATH = "/connector_platform_oauth_redirect";
 const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
 
-const PERPLEXITY_SUBDOMAINS = ["www", "enterprise", "n"];
-const PERPLEXITY_DOMAINS = ["perplexity.ai", "perplexity.com"];
-const PERPLEXITY_HOSTS = new Set(
-  PERPLEXITY_SUBDOMAINS.flatMap((subdomain) => PERPLEXITY_DOMAINS.map((domain) => `${subdomain}.${domain}`))
-);
+function isPerplexityHost(hostname: string): boolean {
+  return hostname === "perplexity.ai" || 
+         hostname === "perplexity.com" || 
+         hostname.endsWith(".perplexity.ai") || 
+         hostname.endsWith(".perplexity.com");
+}
+
 const PERPLEXITY_CALLBACK_PATH = "/rest/connections/oauth_callback";
+
+function isClaudeHost(hostname: string): boolean {
+  return hostname === "claude.ai" || hostname.endsWith(".claude.ai");
+}
+
+const CLAUDE_CALLBACK_PATH = "/api/mcp/auth_callback";
 
 function isSecureOrigin(url: URL): boolean {
   return url.protocol === "https:" && url.username === "" && url.password === "" && url.port === "";
@@ -20,11 +28,19 @@ function isAllowedChatGptRedirect(url: URL): boolean {
 }
 
 function isAllowedPerplexityRedirect(url: URL): boolean {
-  return PERPLEXITY_HOSTS.has(url.hostname) && url.pathname === PERPLEXITY_CALLBACK_PATH;
+  return isPerplexityHost(url.hostname) && url.pathname === PERPLEXITY_CALLBACK_PATH;
+}
+
+function isAllowedClaudeRedirect(url: URL): boolean {
+  return isClaudeHost(url.hostname) && url.pathname === CLAUDE_CALLBACK_PATH;
 }
 
 export function isAllowedHost(url: URL): boolean {
-  return isSecureOrigin(url) && (url.hostname === CHATGPT_HOST || PERPLEXITY_HOSTS.has(url.hostname));
+  return isSecureOrigin(url) && (
+    url.hostname === CHATGPT_HOST || 
+    isPerplexityHost(url.hostname) || 
+    isClaudeHost(url.hostname)
+  );
 }
 
 export function isAllowedRedirectUri(value: string): boolean {
@@ -35,5 +51,5 @@ export function isAllowedRedirectUri(value: string): boolean {
     return false;
   }
   if (!isSecureOrigin(url)) return false;
-  return isAllowedChatGptRedirect(url) || isAllowedPerplexityRedirect(url);
+  return isAllowedChatGptRedirect(url) || isAllowedPerplexityRedirect(url) || isAllowedClaudeRedirect(url);
 }

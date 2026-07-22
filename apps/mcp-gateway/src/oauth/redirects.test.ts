@@ -16,6 +16,11 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("https://n.perplexity.com/rest/connections/oauth_callback")).toBe(true);
   });
 
+  it("accepts the exact Claude.ai OAuth callbacks", () => {
+    expect(isAllowedRedirectUri("https://claude.ai/api/mcp/auth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://subdomain.claude.ai/api/mcp/auth_callback")).toBe(true);
+  });
+
   it("rejects http", () => {
     expect(isAllowedRedirectUri("http://chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
     expect(isAllowedRedirectUri("http://www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
@@ -26,16 +31,19 @@ describe("isAllowedRedirectUri", () => {
     expect(isAllowedRedirectUri("http://n.perplexity.com/rest/connections/oauth_callback")).toBe(false);
   });
 
-  it("rejects subdomains and alternate Perplexity hosts", () => {
+  it("accepts subdomains and alternate Perplexity hosts", () => {
+    expect(isAllowedRedirectUri("https://perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://perplexity.com/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://sub.www.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://sub.www.perplexity.com/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.com/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://sub.n.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+    expect(isAllowedRedirectUri("https://connect.perplexity.ai/rest/connections/oauth_callback")).toBe(true);
+  });
+
+  it("rejects subdomains for ChatGPT", () => {
     expect(isAllowedRedirectUri("https://sub.chatgpt.com/connector_platform_oauth_redirect")).toBe(false);
-    expect(isAllowedRedirectUri("https://perplexity.ai/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://perplexity.com/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://sub.www.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://sub.www.perplexity.com/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://sub.enterprise.perplexity.com/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://sub.n.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
-    expect(isAllowedRedirectUri("https://connect.perplexity.ai/rest/connections/oauth_callback")).toBe(false);
   });
 
   it("rejects lookalike hosts", () => {

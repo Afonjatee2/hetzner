@@ -1,0 +1,10 @@
+tunnel: 37e5eb06-a89b-4f34-bb5f-a779c19306a4
+credentials-file: /etc/cloudflared/37e5eb06-a89b-4f34-bb5f-a779c19306a4.json
+
+ingress:
+  - hostname: dev-mcp.remoteconnector.uk
+    service: http://127.0.0.1:8081
+    originRequest:
+      connectTimeout: 10s
+      noHappyEyeballs: false
+  - service: http_status:404
