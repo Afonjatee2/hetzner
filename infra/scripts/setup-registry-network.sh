@@ -54,8 +54,12 @@ fi
 "$IPT" -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
 # Allow HTTPS to npm registry
 "$IPT" -A "$CHAIN" -p tcp -d registry.npmjs.org --dport 443 -j ACCEPT
-# Allow HTTPS to npm registry CDN (for tarball downloads)
-"$IPT" -A "$CHAIN" -p tcp --dport 443 -m owner ! --uid-owner root -j ACCEPT
+# Allow HTTPS to npm registry CDNs (for tarball downloads).
+# NOTE: -m owner cannot be used here because this chain is jumped to from
+# FORWARD, and the owner match is only valid in OUTPUT/POSTROUTING hooks.
+# The chain is already bridge-filtered (-i br-gptdev-reg) so allowing all
+# port 443 outbound from the registry network is safe.
+"$IPT" -A "$CHAIN" -p tcp --dport 443 -j ACCEPT
 # Drop everything else outbound from this bridge
 "$IPT" -A "$CHAIN" -o "$BRIDGE" -j DROP
 "$IPT" -A "$CHAIN" -j DROP
@@ -88,7 +92,7 @@ echo "iptables rules applied: only DNS + HTTPS outbound from $NETWORK_NAME"
 echo ""
 echo "NOTE: For stricter control, replace the broad port-443 rule with explicit"
 echo "IP ranges for registry.npmjs.org. The current setup allows any HTTPS dest"
-echo "from non-root UIDs inside the network, which covers npm/pnpm tarball CDNs."
+echo "from inside the registry network, which covers npm/pnpm tarball CDNs."
 echo ""
 echo "To persist across reboots, install iptables-persistent:"
 echo "  apt-get install iptables-persistent && netfilter-persistent save"
