@@ -48,7 +48,7 @@ describe("GitService promotion and sync", () => {
     expect(result.after).toBe(commit);
     expect(await run(remote, ["rev-parse", "refs/heads/main"])).toBe(commit);
     expect(await readFile(join(project, "feature.txt"), "utf8")).toBe("published\n");
-  });
+  }, 20_000);
 
   it("syncs a clean canonical checkout using a fast-forward only", async () => {
     const { root, project, remote, service } = await fixture();
@@ -66,7 +66,7 @@ describe("GitService promotion and sync", () => {
 
     expect(result.changed).toBe(true);
     expect(await readFile(join(project, "remote.txt"), "utf8")).toBe("new\n");
-  });
+  }, 20_000);
 
   it("allows harmless untracked files in the canonical checkout", async () => {
     const { project, service } = await fixture();

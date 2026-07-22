@@ -21,6 +21,7 @@ const Environment = z.object({
   TASK_DEFAULT_CPUS: z.coerce.number().positive().max(64).default(2),
   TASK_DEFAULT_PIDS: z.coerce.number().int().min(16).max(32768).default(256),
   HOST_EXECUTION: z.enum(["disabled", "enabled"]).default("disabled"),
+  AGENT_EXECUTION: z.enum(["disabled", "enabled"]).default("disabled"),
   HOST_PATH_PREPEND: z.string().optional(),
   AGENT_CLI_PATH: z.string().default("claude"),
   AGENT_BACKEND_BASE_URL: z.string().url().default("http://127.0.0.1:3456"),

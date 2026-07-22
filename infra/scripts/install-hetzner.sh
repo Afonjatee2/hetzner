@@ -28,4 +28,5 @@ install -o root -g root -m 0644 infra/systemd/gpt-dev-gateway.service /etc/syste
 install -o root -g root -m 0644 infra/systemd/gpt-dev-backup.service infra/systemd/gpt-dev-backup.timer /etc/systemd/system/
 install -o root -g root -m 0644 infra/systemd/gpt-dev-registry-rules.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable gpt-dev-gateway.service gpt-dev-backup.timer gpt-dev-registry-rules.service
+systemctl enable gpt-dev-gateway.service gpt-dev-backup.timer
+systemctl enable --now gpt-dev-registry-rules.service

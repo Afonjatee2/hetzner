@@ -16,6 +16,7 @@ import { ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from
 import type { SkillsService } from "@gpt-dev/skills-service";
 import type { TaskService } from "@gpt-dev/task-service";
 import type { Config } from "./config.js";
+import { hasPreparedNodeDependencies, requiresPreparedNodeDependencies } from "./execution-policy.js";
 
 export interface Services {
   config: Config;
@@ -86,7 +87,8 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: {}, annotations: { title: "System health", readOnlyHint: true, openWorldHint: false }
   }, async () => safely(services, "system_health", {}, async () => ({
     gateway: "ok", database: services.database.db.prepare("SELECT 1 AS ok").get(), docker: await services.runner.health(),
-    hostExecution: services.config.HOST_EXECUTION,
+    registryNetwork: await services.runner.registryNetworkHealth(),
+    hostExecution: services.config.HOST_EXECUTION, agentExecution: services.config.AGENT_EXECUTION,
     workspaceRoot: services.config.workspaceRoot, architecture: process.arch, uptimeSeconds: Math.floor(process.uptime())
   })));
 
@@ -216,6 +218,15 @@ export function createMcpServer(services: Services): McpServer {
     annotations: { title: "Prepare task dependencies", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "prepare_task", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
     if (!services.config.PNPM_STORE_DIR) throw new WorkspaceError("FORBIDDEN", "PNPM_STORE_DIR is not configured in the gateway environment");
+    const registryNetwork = await services.runner.registryNetworkHealth();
+    if (!registryNetwork.ok) {
+      throw new WorkspaceError(
+        "EXECUTION_FAILED",
+        `Dependency preparation is unavailable because Docker network ${registryNetwork.name} is missing or inaccessible. Restart gpt-dev-registry-rules.service before retrying.`,
+        true,
+        { network: registryNetwork.name, cause: registryNetwork.error }
+      );
+    }
     const tree = worktree(services.database, input.projectId, input.taskId);
     const project = services.projects.get(input.projectId);
     const image = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
@@ -243,6 +254,13 @@ export function createMcpServer(services: Services): McpServer {
     }
     const project = services.projects.get(input.projectId);
     const tree = worktree(services.database, input.projectId, input.taskId);
+    if (requiresPreparedNodeDependencies(project.runtime, input.mode, input.executable, input.args)
+      && !await hasPreparedNodeDependencies(tree.path)) {
+      throw new WorkspaceError(
+        "CONFLICT",
+        "Node dependencies are not prepared for this worktree. Run prepare_task successfully before lint, typecheck, test or build commands."
+      );
+    }
     const timeoutSeconds = Math.min(input.timeoutSeconds ?? services.config.TASK_DEFAULT_TIMEOUT_SECONDS, services.config.TASK_MAX_TIMEOUT_SECONDS);
     const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
     return services.tasks.start({ worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
@@ -253,7 +271,7 @@ export function createMcpServer(services: Services): McpServer {
   }));
 
   server.registerTool("execute_plan", {
-    description: "Hand a complete implementation plan to a local coding agent (Claude Code CLI) that executes it autonomously inside the task worktree: it reads the repo, edits files, runs commands and iterates on failures at native speed. One call replaces the per-edit tool loop — write a precise plan (exact files, exact changes, acceptance checks), then poll get_task and read_task_logs (stream-json events) for progress, and review with git_diff before commit_task. backend 'ccr' (default) routes the agent through the local claude-code-router models; 'subscription' uses the operator's own Claude account. Requires the operator to enable HOST_EXECUTION.",
+    description: "Hand a complete implementation plan to a local coding agent (Claude Code CLI) that executes it autonomously inside the task worktree: it reads the repo, edits files, runs commands and iterates on failures at native speed. One call replaces the per-edit tool loop — write a precise plan (exact files, exact changes, acceptance checks), then poll get_task and read_task_logs (stream-json events) for progress, and review with git_diff before commit_task. backend 'ccr' (default) routes the agent through the local claude-code-router models; 'subscription' uses the operator's own Claude account. Requires the operator to enable AGENT_EXECUTION.",
     inputSchema: {
       projectId: ProjectId, taskId: TaskId,
       plan: z.string().min(20).max(200_000),
@@ -263,8 +281,8 @@ export function createMcpServer(services: Services): McpServer {
     },
     annotations: { title: "Execute plan with local agent", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "execute_plan", { projectId: input.projectId, taskId: input.taskId, networked: true, detail: { backend: input.backend, planBytes: Buffer.byteLength(input.plan) } }, async () => {
-    if (services.config.HOST_EXECUTION !== "enabled") {
-      throw new WorkspaceError("FORBIDDEN", "Host execution is disabled. The operator must set HOST_EXECUTION=enabled in the gateway environment.");
+    if (services.config.AGENT_EXECUTION !== "enabled") {
+      throw new WorkspaceError("FORBIDDEN", "Agent execution is disabled. The operator must set AGENT_EXECUTION=enabled in the gateway environment.");
     }
     const tree = worktree(services.database, input.projectId, input.taskId);
     const executionId = randomUUID();
@@ -275,6 +293,7 @@ export function createMcpServer(services: Services): McpServer {
       `Execute the implementation plan stored at ${planPath}. Read it fully before changing anything.`,
       "Work only inside the current directory, which is an isolated git worktree for this task.",
       "Implement the plan exactly, run the acceptance checks it defines, and fix failures until they pass.",
+      "If dependency preparation or another prerequisite fails, stop dependent checks and report the infrastructure failure clearly instead of treating them as code failures.",
       "Never run git push, never publish, and never modify files outside the worktree.",
       "Finish with a concise summary of the changes made and the final check results."
     ].join(" ");

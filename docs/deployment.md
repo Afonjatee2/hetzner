@@ -16,7 +16,7 @@ The installer also runs `infra/scripts/setup-registry-network.sh`, which creates
 sudo bash infra/scripts/setup-registry-network.sh
 ```
 
-The iptables rules do not survive a reboot by themselves. On Ubuntu 26.04+ the `gpt-dev-registry-rules` systemd service re-applies them after Docker starts on boot. On older systems, install `iptables-persistent` and run `netfilter-persistent save` after the rules are applied (and after any change to them).
+The `gpt-dev-registry-rules` systemd service now owns both network creation and rule application. It is bound to Docker and ordered before the gateway, so a Docker restart recreates `gptdev-registry` before new tasks are accepted. `system_health` reports the network separately, and `prepare_task` fails immediately with a repair instruction when it is unavailable. On older systems, also install `iptables-persistent` and run `netfilter-persistent save` after any rule change.
 
 Required production values include `NODE_ENV=production`, `AUTH_MODE=oauth`, `PUBLIC_BASE_URL`, `OAUTH_ISSUER`, `OAUTH_AUDIENCE` and `OAUTH_JWKS_URI` when using an external authorization server.
 
@@ -58,7 +58,7 @@ docker buildx build --platform linux/amd64,linux/arm64 --push -t REGISTRY/gptdev
 
 Pin production image digests after verification.
 
-After pulling commits that touch `runner-images/`, rebuild the local images with `docker compose --profile images build`; the gateway does not rebuild them itself. A stale `gptdev-runner-node:local` image typically surfaces as Corepack trying to download pnpm inside task containers, which fails because task containers have no network access.
+After pulling commits that touch `runner-images/`, rebuild the local images with `docker compose --profile images build`; the gateway does not rebuild them itself. The Node image pins pnpm and disables pnpm's automatic package-manager-version download, so offline lint/test commands use the binary already baked into the image instead of hanging while resolving a repository `packageManager` version.
 
 The service is designed for a rootless Docker daemon owned by `gptdev`. In that
 mode container UID 0 maps to the unprivileged host user; task containers still
@@ -73,9 +73,11 @@ Create a new named tunnel and hostname such as `dev-mcp.remoteconnector.uk`. Use
 ## 5. Start and accept
 
 ```bash
-sudo systemctl enable --now gpt-dev-gateway cloudflared gpt-dev-backup.timer
+sudo systemctl enable --now gpt-dev-registry-rules gpt-dev-gateway cloudflared gpt-dev-backup.timer
 curl --fail http://127.0.0.1:8081/healthz
+sudo systemctl is-active gpt-dev-registry-rules
+docker network inspect gptdev-registry >/dev/null
 sudo journalctl -u gpt-dev-gateway -n 100 --no-pager
 ```
 
-Connect a separate ChatGPT app named **Hetzner Dev Workspace** to the public `/mcp` endpoint. Test read tools, worktree creation, constrained execution, Playwright evidence, final diff, commit/rollback and reboot recovery before any approved project migration.
+Connect a separate ChatGPT app named **Hetzner Dev Workspace** to the public `/mcp` endpoint. Test read tools, worktree creation, dependency preparation, constrained execution, Playwright evidence, final diff, commit/rollback and reboot recovery before any approved project migration. Set `AGENT_EXECUTION=enabled` only when the fixed coding-agent CLI is installed and intended for remote use; keep `HOST_EXECUTION=disabled` unless arbitrary host commands are explicitly required.

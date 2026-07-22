@@ -93,6 +93,19 @@ export class DockerSandboxRunner implements TaskRunner {
     }
   }
 
+  async registryNetworkHealth(): Promise<{ ok: boolean; name: string; error?: string }> {
+    try {
+      await docker(["network", "inspect", this.registryNetworkName]);
+      return { ok: true, name: this.registryNetworkName };
+    } catch (error) {
+      return {
+        ok: false,
+        name: this.registryNetworkName,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+
   async run(request: SandboxRequest, callbacks: SandboxCallbacks): Promise<SandboxResult> {
     if (request.network === "restricted" && !request.networkName?.match(/^gptdev-preview-[a-f0-9-]{36}$/)) {
       throw new WorkspaceError("FORBIDDEN", "Restricted networking requires a task-specific preview network");

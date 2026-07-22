@@ -1,7 +1,10 @@
 [Unit]
 Description=Hetzner Dev Workspace MCP Gateway
-After=network-online.target
+After=network-online.target docker.service gpt-dev-registry-rules.service
 Wants=network-online.target
+Requires=docker.service gpt-dev-registry-rules.service
+BindsTo=docker.service gpt-dev-registry-rules.service
+PartOf=docker.service
 
 [Service]
 Type=simple
@@ -44,4 +47,4 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target docker.service

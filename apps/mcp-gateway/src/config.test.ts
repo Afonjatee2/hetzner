@@ -50,6 +50,18 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...BASE_ENV, AUTH_MODE: "first-party" })).toThrow(/OAUTH_OPERATOR_PASSWORD_HASH/);
   });
 
+  it("keeps arbitrary host commands and agent execution independently disabled by default", () => {
+    const config = loadConfig({ ...BASE_ENV });
+    expect(config.HOST_EXECUTION).toBe("disabled");
+    expect(config.AGENT_EXECUTION).toBe("disabled");
+  });
+
+  it("allows agent execution without enabling arbitrary host commands", () => {
+    const config = loadConfig({ ...BASE_ENV, AGENT_EXECUTION: "enabled", HOST_EXECUTION: "disabled" });
+    expect(config.AGENT_EXECUTION).toBe("enabled");
+    expect(config.HOST_EXECUTION).toBe("disabled");
+  });
+
   it("accepts a local-files profile with a fixed SSH handoff target", () => {
     const config = loadConfig({
       ...BASE_ENV,

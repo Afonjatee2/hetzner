@@ -30,6 +30,8 @@ services:
       OAUTH_AUDIENCE: "${OAUTH_AUDIENCE:-}"
       OAUTH_JWKS_URI: "${OAUTH_JWKS_URI:-}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      HOST_EXECUTION: "${HOST_EXECUTION:-disabled}"
+      AGENT_EXECUTION: "${AGENT_EXECUTION:-disabled}"
       PNPM_STORE_DIR: /var/lib/gpt-dev/pnpm-store
       REGISTRY_NETWORK_NAME: gptdev-registry
     volumes:
