@@ -24,31 +24,64 @@ fi
 CHAIN="GPTDEV_REGISTRY"
 BRIDGE="br-gptdev-reg"
 
-if iptables -L "$CHAIN" -n >/dev/null 2>&1; then
+# Pick the iptables binary. On Ubuntu 24.04+ the default `iptables` is the
+# nftables wrapper (iptables-nft) which can reject FORWARD inserts with
+# "RULE_INSERT failed (Invalid argument)". Fall back to iptables-legacy.
+IPT="${IPTABLES:-iptables}"
+if ! "$IPT" -L FORWARD -n >/dev/null 2>&1; then
+  if command -v iptables-legacy >/dev/null 2>&1; then
+    echo "Default iptables unusable, switching to iptables-legacy."
+    IPT="iptables-legacy"
+  else
+    echo "ERROR: iptables not functional and iptables-legacy not found." >&2
+    exit 1
+  fi
+fi
+
+if "$IPT" -L "$CHAIN" -n >/dev/null 2>&1; then
   echo "iptables chain $CHAIN already exists, flushing and re-adding rules."
-  iptables -F "$CHAIN"
+  "$IPT" -F "$CHAIN"
 else
-  iptables -N "$CHAIN"
+  "$IPT" -N "$CHAIN"
 fi
 
 # Allow loopback
-iptables -A "$CHAIN" -o lo -j ACCEPT
+"$IPT" -A "$CHAIN" -o lo -j ACCEPT
 # Allow established/related (responses from registry)
-iptables -A "$CHAIN" -m state --state ESTABLISHED,RELATED -j ACCEPT
+"$IPT" -A "$CHAIN" -m state --state ESTABLISHED,RELATED -j ACCEPT
 # Allow DNS (needed for resolving registry.npmjs.org)
-iptables -A "$CHAIN" -p udp --dport 53 -j ACCEPT
-iptables -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
+"$IPT" -A "$CHAIN" -p udp --dport 53 -j ACCEPT
+"$IPT" -A "$CHAIN" -p tcp --dport 53 -j ACCEPT
 # Allow HTTPS to npm registry
-iptables -A "$CHAIN" -p tcp -d registry.npmjs.org --dport 443 -j ACCEPT
+"$IPT" -A "$CHAIN" -p tcp -d registry.npmjs.org --dport 443 -j ACCEPT
 # Allow HTTPS to npm registry CDN (for tarball downloads)
-iptables -A "$CHAIN" -p tcp --dport 443 -m owner ! --uid-owner root -j ACCEPT
+"$IPT" -A "$CHAIN" -p tcp --dport 443 -m owner ! --uid-owner root -j ACCEPT
 # Drop everything else outbound from this bridge
-iptables -A "$CHAIN" -o "$BRIDGE" -j DROP
-iptables -A "$CHAIN" -j DROP
+"$IPT" -A "$CHAIN" -o "$BRIDGE" -j DROP
+"$IPT" -A "$CHAIN" -j DROP
 
-# Attach chain to FORWARD for traffic from the registry bridge
-if ! iptables -C FORWARD -i "$BRIDGE" -j "$CHAIN" 2>/dev/null; then
-  iptables -I FORWARD -i "$BRIDGE" -j "$CHAIN"
+# Attach chain to the forwarding path. Docker recommends the DOCKER-USER
+# chain for user-defined rules; on nftables-backed systems inserting directly
+# into FORWARD can fail with "Invalid argument", so try DOCKER-USER first.
+ATTACHED=false
+for target in DOCKER-USER FORWARD; do
+  "$IPT" -L "$target" -n >/dev/null 2>&1 || continue
+  if "$IPT" -C "$target" -i "$BRIDGE" -j "$CHAIN" 2>/dev/null; then
+    echo "Rule already present in $target."
+    ATTACHED=true
+    break
+  fi
+  if "$IPT" -I "$target" -i "$BRIDGE" -j "$CHAIN" 2>/dev/null; then
+    echo "Attached $CHAIN to $target via $IPT."
+    ATTACHED=true
+    break
+  fi
+done
+
+if [ "$ATTACHED" = false ]; then
+  echo "WARNING: Could not attach $CHAIN to DOCKER-USER or FORWARD." >&2
+  echo "         If iptables-legacy is installed, try:" >&2
+  echo "         IPTABLES=iptables-legacy sudo bash setup-registry-network.sh" >&2
 fi
 
 echo "iptables rules applied: only DNS + HTTPS outbound from $NETWORK_NAME"
