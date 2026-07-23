@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { isAllowedRedirectUri } from "./redirects.js";
 
+const QWEN_CALLBACK = "http://localhost:7777/oauth/callback";
+
 describe("isAllowedRedirectUri", () => {
   it("accepts both ChatGPT redirect paths", () => {
     expect(isAllowedRedirectUri("https://chatgpt.com/connector_platform_oauth_redirect")).toBe(true);
@@ -19,6 +21,29 @@ describe("isAllowedRedirectUri", () => {
   it("accepts the exact Claude.ai OAuth callbacks", () => {
     expect(isAllowedRedirectUri("https://claude.ai/api/mcp/auth_callback")).toBe(true);
     expect(isAllowedRedirectUri("https://subdomain.claude.ai/api/mcp/auth_callback")).toBe(true);
+  });
+
+  it("accepts only the exact Qwen Code loopback callback", () => {
+    expect(isAllowedRedirectUri(QWEN_CALLBACK)).toBe(true);
+  });
+
+  it("rejects hostile Qwen callback variants", () => {
+    const rejected = [
+      "http://127.0.0.1:7777/oauth/callback",
+      "http://localhost:7778/oauth/callback",
+      "http://localhost:7777/oauth/other",
+      "https://localhost:7777/oauth/callback",
+      "http://sub.localhost:7777/oauth/callback",
+      "http://localhost.evil.com:7777/oauth/callback",
+      "http://localhost@evil.com:7777/oauth/callback",
+      "http://evil.com@localhost:7777/oauth/callback",
+      "http://user:pass@localhost:7777/oauth/callback",
+      "http://localhost:7777/oauth/callback?code=abc",
+      "http://localhost:7777/oauth/callback?",
+      "http://localhost:7777/oauth/callback#fragment",
+      "http://localhost:7777/oauth/callback#"
+    ];
+    for (const value of rejected) expect(isAllowedRedirectUri(value), value).toBe(false);
   });
 
   it("rejects http", () => {

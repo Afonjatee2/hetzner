@@ -1,11 +1,12 @@
 const CHATGPT_HOST = "chatgpt.com";
 const CHATGPT_LEGACY_PATH = "/connector_platform_oauth_redirect";
 const CHATGPT_CALLBACK_PREFIX = "/connector/oauth/";
+const QWEN_CALLBACK = "http://localhost:7777/oauth/callback";
 
 function isPerplexityHost(hostname: string): boolean {
-  return hostname === "perplexity.ai" || 
-         hostname === "perplexity.com" || 
-         hostname.endsWith(".perplexity.ai") || 
+  return hostname === "perplexity.ai" ||
+         hostname === "perplexity.com" ||
+         hostname.endsWith(".perplexity.ai") ||
          hostname.endsWith(".perplexity.com");
 }
 
@@ -19,6 +20,18 @@ const CLAUDE_CALLBACK_PATH = "/api/mcp/auth_callback";
 
 function isSecureOrigin(url: URL): boolean {
   return url.protocol === "https:" && url.username === "" && url.password === "" && url.port === "";
+}
+
+function isAllowedQwenRedirect(value: string, url: URL): boolean {
+  return value === QWEN_CALLBACK &&
+    url.protocol === "http:" &&
+    url.hostname === "localhost" &&
+    url.port === "7777" &&
+    url.pathname === "/oauth/callback" &&
+    url.username === "" &&
+    url.password === "" &&
+    url.search === "" &&
+    url.hash === "";
 }
 
 function isAllowedChatGptRedirect(url: URL): boolean {
@@ -37,8 +50,8 @@ function isAllowedClaudeRedirect(url: URL): boolean {
 
 export function isAllowedHost(url: URL): boolean {
   return isSecureOrigin(url) && (
-    url.hostname === CHATGPT_HOST || 
-    isPerplexityHost(url.hostname) || 
+    url.hostname === CHATGPT_HOST ||
+    isPerplexityHost(url.hostname) ||
     isClaudeHost(url.hostname)
   );
 }
@@ -50,6 +63,7 @@ export function isAllowedRedirectUri(value: string): boolean {
   } catch {
     return false;
   }
+  if (isAllowedQwenRedirect(value, url)) return true;
   if (!isSecureOrigin(url)) return false;
   return isAllowedChatGptRedirect(url) || isAllowedPerplexityRedirect(url) || isAllowedClaudeRedirect(url);
 }

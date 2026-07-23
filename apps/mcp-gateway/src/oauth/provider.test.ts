@@ -12,6 +12,7 @@ import { OAuthProvider, type AuthorizeQuery, type PreparedAuthorizeRequest, type
 import { OAuthStore } from "./store.js";
 
 const ALLOWED_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
+const QWEN_REDIRECT = "http://localhost:7777/oauth/callback";
 
 function pkcePair(): { verifier: string; challenge: string } {
   const verifier = randomToken();
@@ -85,6 +86,18 @@ describe("registerClient", () => {
     expect(result.status).toBe(201);
     expect(typeof body(result).client_id).toBe("string");
     expect(body(result).token_endpoint_auth_method).toBe("none");
+  });
+
+  it("registers Qwen Code with its exact loopback redirect", async () => {
+    const { provider } = await setup();
+    const result = provider.registerClient({
+      client_name: "Qwen Code",
+      redirect_uris: [QWEN_REDIRECT],
+      token_endpoint_auth_method: "none"
+    });
+    expect(result.status).toBe(201);
+    expect(body(result).redirect_uris).toEqual([QWEN_REDIRECT]);
+    expect(typeof body(result).client_id).toBe("string");
   });
 
   it("rejects a disallowed redirect_uri", async () => {
