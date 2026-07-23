@@ -14,6 +14,7 @@
     "@gpt-dev/sandbox-runner": "workspace:*",
     "@gpt-dev/schemas": "workspace:*",
     "@gpt-dev/skills-service": "workspace:*",
-    "@gpt-dev/task-service": "workspace:*"
+    "@gpt-dev/task-service": "workspace:*",
+    "@gpt-dev/workspace-service": "workspace:*"
   }
 }

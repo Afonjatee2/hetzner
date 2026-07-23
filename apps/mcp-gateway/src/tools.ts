@@ -15,8 +15,12 @@ import type { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
 import { ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from "@gpt-dev/schemas";
 import type { SkillsService } from "@gpt-dev/skills-service";
 import type { TaskService } from "@gpt-dev/task-service";
+import { NEW_FILE_SHA256, type WorkspaceRecord, type WorkspaceService } from "@gpt-dev/workspace-service";
 import type { Config } from "./config.js";
-import { hasPreparedNodeDependencies, requiresPreparedNodeDependencies } from "./execution-policy.js";
+import {
+  createElectronEnvironment, hasPreparedNodeDependencies, requiresPreparedNodeDependencies, resolveTaskCheckPreset,
+  type TaskCheckPreset
+} from "./execution-policy.js";
 
 export interface Services {
   config: Config;
@@ -25,6 +29,7 @@ export interface Services {
   git: GitService;
   runner: DockerSandboxRunner;
   tasks: TaskService;
+  workspaces: WorkspaceService;
   artifacts: ArtifactService;
   browser: BrowserService;
   devServers: DevServerService;
@@ -33,21 +38,14 @@ export interface Services {
   skills: SkillsService | undefined;
 }
 
-interface WorktreeRecord { taskId: string; projectId: string; path: string; branch: string; status: string; createdAt: string }
-
-function worktreeRecord(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
-  const row = database.db.prepare(`
-    SELECT task_id AS taskId, project_id AS projectId, path, branch, status, created_at AS createdAt
-    FROM worktrees WHERE task_id=? AND project_id=?
-  `).get(taskId, projectId) as WorktreeRecord | undefined;
-  if (!row) throw new WorkspaceError("NOT_FOUND", "Task worktree not found for project");
-  return row;
+function workspace(services: Services, projectId: string, taskId: string): WorkspaceRecord {
+  return services.workspaces.get(projectId, taskId);
 }
 
-function worktree(database: WorkspaceDatabase, projectId: string, taskId: string): WorktreeRecord {
-  const row = worktreeRecord(database, projectId, taskId);
-  if (row.status !== "active") throw new WorkspaceError("CONFLICT", `Worktree is ${row.status}`);
-  return row;
+function updateWorkspaceStatus(services: Services, taskId: string, status: string): void {
+  services.database.db.prepare("UPDATE task_workspaces SET status=?, active_path=CASE WHEN ?='active' THEN active_path ELSE NULL END WHERE task_id=?")
+    .run(status, status, taskId);
+  services.database.db.prepare("UPDATE worktrees SET status=? WHERE task_id=?").run(status, taskId);
 }
 
 function content(value: unknown, isError = false) {
@@ -76,7 +74,7 @@ async function safely<T>(services: Services, action: string, options: Parameters
 }
 
 function rootFor(services: Services, projectId: string, taskId?: string): string {
-  return taskId ? worktree(services.database, projectId, taskId).path : services.projects.get(projectId).canonicalPath;
+  return taskId ? workspace(services, projectId, taskId).path : services.projects.get(projectId).canonicalPath;
 }
 
 export function createMcpServer(services: Services): McpServer {
@@ -107,19 +105,32 @@ export function createMcpServer(services: Services): McpServer {
     description: "Return a bounded tree for an approved project or active task worktree.",
     inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), path: z.string().default("."), maxEntries: z.number().int().min(1).max(5000).default(1000), maxDepth: z.number().int().min(1).max(20).default(8) },
     annotations: { title: "Project tree", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "project_tree", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.tree(rootFor(services, input.projectId, input.taskId), input.path, input.maxEntries, input.maxDepth)));
+  }, async (input) => safely(services, "project_tree", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => {
+    if (input.taskId) services.workspaces.requireCapability(input.projectId, input.taskId, "read");
+    return services.projects.tree(rootFor(services, input.projectId, input.taskId), input.path, input.maxEntries, input.maxDepth);
+  }));
 
   server.registerTool("read_file", {
     description: "Read a bounded UTF-8 text file from an approved project or active task worktree. Rejects binaries and path escapes.",
     inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), path: RelativePath, maxBytes: z.number().int().min(1).max(2_000_000).default(1_000_000) },
     annotations: { title: "Read file", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "read_file", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.readText(rootFor(services, input.projectId, input.taskId), input.path, input.maxBytes)));
+  }, async (input) => safely(services, "read_file", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, async () => {
+    const root = rootFor(services, input.projectId, input.taskId);
+    if (!input.taskId) return services.projects.readText(root, input.path, input.maxBytes);
+    const target = services.workspaces.requireCapability(input.projectId, input.taskId, "read");
+    if (target.kind === "isolated") return services.projects.readText(root, input.path, input.maxBytes);
+    const state = await services.workspaces.fileState(root, input.path, true, input.maxBytes);
+    return { content: state.content, sha256: state.sha256, bytes: state.bytes };
+  }));
 
   server.registerTool("search_code", {
     description: "Search text with ripgrep inside an approved project or active task worktree. Results are bounded.",
     inputSchema: { projectId: ProjectId, taskId: TaskId.optional(), pattern: z.string().min(1).max(512), maxResults: z.number().int().min(1).max(1000).default(200) },
     annotations: { title: "Search code", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "search_code", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => services.projects.search(rootFor(services, input.projectId, input.taskId), input.pattern, input.maxResults)));
+  }, async (input) => safely(services, "search_code", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}) }, () => {
+    if (input.taskId) services.workspaces.requireCapability(input.projectId, input.taskId, "read");
+    return services.projects.search(rootFor(services, input.projectId, input.taskId), input.pattern, input.maxResults);
+  }));
 
   if (services.skills) {
     server.registerTool("list_skills", {
@@ -143,9 +154,34 @@ export function createMcpServer(services: Services): McpServer {
     const project = services.projects.get(input.projectId);
     const taskId = randomUUID();
     const created = await services.git.createWorktree(project.canonicalPath, project.id, taskId, input.slug);
-    const record = { taskId, projectId: project.id, path: created.path, branch: created.branch, status: "active", createdAt: new Date().toISOString() };
-    services.database.db.prepare(`INSERT INTO worktrees (task_id, project_id, path, branch, status, created_at) VALUES (@taskId,@projectId,@path,@branch,@status,@createdAt)`).run(record);
-    return record;
+    const originalHead = await services.git.head(created.path);
+    const record = { taskId, projectId: project.id, path: created.path, branch: created.branch, originalHead, status: "active", createdAt: new Date().toISOString() };
+    services.database.db.transaction(() => {
+      services.database.db.prepare(`INSERT INTO worktrees (task_id, project_id, path, branch, status, created_at) VALUES (@taskId,@projectId,@path,@branch,@status,@createdAt)`).run(record);
+      services.workspaces.recordIsolated(record);
+    })();
+    return services.workspaces.get(project.id, taskId);
+  }));
+
+  server.registerTool("attach_existing_checkout", {
+    description: "Attach a task to the exact registered checkout without creating a branch or worktree. Captures a complete dirty baseline outside the repository first.",
+    inputSchema: {
+      projectId: ProjectId,
+      expectedBranch: z.string().min(1).max(256).refine((value) => !value.includes("\0")),
+      preserveDirtyState: z.literal(true),
+      allowHostExecution: z.boolean().optional()
+    },
+    annotations: { title: "Attach existing checkout", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "attach_existing_checkout", { projectId: input.projectId }, async () => {
+    if (input.allowHostExecution === true && services.config.HOST_EXECUTION !== "enabled") {
+      throw new WorkspaceError("FORBIDDEN", "Host execution requires HOST_EXECUTION=enabled on the gateway");
+    }
+    return services.workspaces.attach({
+      project: services.projects.get(input.projectId),
+      expectedBranch: input.expectedBranch,
+      preserveDirtyState: input.preserveDirtyState,
+      ...(input.allowHostExecution === undefined ? {} : { allowHostExecution: input.allowHostExecution })
+    });
   }));
 
   server.registerTool("write_file", {
@@ -153,27 +189,73 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId, path: RelativePath, content: z.string().max(2_000_000) },
     annotations: { title: "Write file", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }, async (input) => safely(services, "write_file", { projectId: input.projectId, taskId: input.taskId }, async () => {
+    services.workspaces.requireCapability(input.projectId, input.taskId, "write");
+    services.workspaces.requireIsolated(input.projectId, input.taskId, "write_file");
     await services.projects.writeText(rootFor(services, input.projectId, input.taskId), input.path, input.content);
     return { path: input.path, bytes: Buffer.byteLength(input.content) };
   }));
 
+  server.registerTool("patch_file", {
+    description: `Optimistically edit one UTF-8 file using bounded exact replacements. expectedSha256 must come from read_file; use ${NEW_FILE_SHA256} only for a new file.`,
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId, path: RelativePath,
+      expectedSha256: z.union([z.string().regex(/^[a-f0-9]{64}$/), z.literal(NEW_FILE_SHA256)]),
+      replacements: z.array(z.object({
+        oldText: z.string().max(1_000_000),
+        newText: z.string().max(1_000_000)
+      })).min(1).max(100)
+    },
+    annotations: { title: "Patch file", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "patch_file", { projectId: input.projectId, taskId: input.taskId }, () =>
+    services.workspaces.patchFile(input)));
+
   server.registerTool("delete_path", {
     description: "Delete a file or directory only inside an active task worktree. This is destructive and cannot target the worktree root.",
-    inputSchema: { projectId: ProjectId, taskId: TaskId, path: RelativePath },
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId, path: RelativePath,
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/).optional()
+    },
     annotations: { title: "Delete path", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
   }, async (input) => safely(services, "delete_path", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
+    const target = workspace(services, input.projectId, input.taskId);
+    if (target.kind === "attached" && !input.expectedSha256) {
+      throw new WorkspaceError("VALIDATION", "expectedSha256 from read_file is required when deleting from an attached workspace");
+    }
+    await services.workspaces.assertDeleteHash(
+      input.projectId, input.taskId, input.path, input.expectedSha256 ?? NEW_FILE_SHA256
+    );
     await services.projects.remove(rootFor(services, input.projectId, input.taskId), input.path); return { deleted: input.path };
   }));
 
   server.registerTool("git_status", {
     description: "Read Git status for an active task worktree.", inputSchema: { projectId: ProjectId, taskId: TaskId },
     annotations: { title: "Git status", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "git_status", { projectId: input.projectId, taskId: input.taskId }, () => services.git.status(rootFor(services, input.projectId, input.taskId))));
+  }, async (input) => safely(services, "git_status", { projectId: input.projectId, taskId: input.taskId }, () => {
+    services.workspaces.requireCapability(input.projectId, input.taskId, "read");
+    return services.git.status(rootFor(services, input.projectId, input.taskId));
+  }));
 
   server.registerTool("git_diff", {
     description: "Read the bounded Git diff for an active task worktree.", inputSchema: { projectId: ProjectId, taskId: TaskId },
     annotations: { title: "Git diff", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "git_diff", { projectId: input.projectId, taskId: input.taskId }, () => services.git.diff(rootFor(services, input.projectId, input.taskId))));
+  }, async (input) => safely(services, "git_diff", { projectId: input.projectId, taskId: input.taskId }, () => {
+    services.workspaces.requireCapability(input.projectId, input.taskId, "read");
+    return services.git.diff(rootFor(services, input.projectId, input.taskId));
+  }));
+
+  server.registerTool("changes_since_attachment", {
+    description: "Classify live filesystem changes against the captured attachment baseline, including pre-existing, concurrent, new, deleted, mode and symlink changes.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Changes since attachment", readOnlyHint: true, openWorldHint: false }
+  }, async (input) => safely(services, "changes_since_attachment", { projectId: input.projectId, taskId: input.taskId }, () =>
+    services.workspaces.changesSinceAttachment(input.projectId, input.taskId)));
+
+  server.registerTool("close_attached_task", {
+    description: "Cancel active child executions, capture/index a final manifest, release checkout ownership, and close an attached task without changing repository files or Git state.",
+    inputSchema: { projectId: ProjectId, taskId: TaskId },
+    annotations: { title: "Close attached task", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "close_attached_task", { projectId: input.projectId, taskId: input.taskId }, () =>
+    services.workspaces.close(input.projectId, input.taskId)));
 
   if (services.handoffSender) {
     server.registerTool("send_handoff_to_hetzner", {
@@ -181,11 +263,8 @@ export function createMcpServer(services: Services): McpServer {
       inputSchema: { projectId: ProjectId, taskId: TaskId },
       annotations: { title: "Send handoff to Hetzner", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
     }, async (input) => safely(services, "send_handoff_to_hetzner", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
-      const tree = services.database.db.prepare(`
-        SELECT task_id AS taskId, project_id AS projectId, path, branch, status, created_at AS createdAt
-        FROM worktrees WHERE task_id=? AND project_id=?
-      `).get(input.taskId, input.projectId) as WorktreeRecord | undefined;
-      if (!tree || !new Set(["active", "committed"]).has(tree.status)) throw new WorkspaceError("NOT_FOUND", "Handoff task worktree not found");
+      const tree = services.workspaces.requireIsolated(input.projectId, input.taskId, "handoff publishing", false);
+      if (!new Set(["active", "committed"]).has(tree.status)) throw new WorkspaceError("NOT_FOUND", "Handoff task worktree not found");
       return services.handoffSender!.send(input.projectId, tree.path);
     }));
   }
@@ -217,6 +296,7 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId, timeoutSeconds: z.number().int().min(30).max(3600).default(600) },
     annotations: { title: "Prepare task dependencies", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "prepare_task", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
+    services.workspaces.requireIsolated(input.projectId, input.taskId, "prepare_task");
     if (!services.config.PNPM_STORE_DIR) throw new WorkspaceError("FORBIDDEN", "PNPM_STORE_DIR is not configured in the gateway environment");
     const registryNetwork = await services.runner.registryNetworkHealth();
     if (!registryNetwork.ok) {
@@ -227,7 +307,7 @@ export function createMcpServer(services: Services): McpServer {
         { network: registryNetwork.name, cause: registryNetwork.error }
       );
     }
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    const tree = workspace(services, input.projectId, input.taskId);
     const project = services.projects.get(input.projectId);
     const image = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
     const executable = project.runtime === "python" ? "pip" : "pnpm";
@@ -249,11 +329,12 @@ export function createMcpServer(services: Services): McpServer {
     annotations: { title: "Run command", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "run_command", { projectId: input.projectId, ...(input.taskId ? { taskId: input.taskId } : {}), networked: input.mode === "host" || input.network !== "none", detail: { mode: input.mode } }, async () => {
     if (!input.taskId) throw new WorkspaceError("VALIDATION", "taskId is required for execution");
+    services.workspaces.requireIsolated(input.projectId, input.taskId, "Unrestricted run_command");
     if (input.mode === "host" && services.config.HOST_EXECUTION !== "enabled") {
       throw new WorkspaceError("FORBIDDEN", "Host execution is disabled. The operator must set HOST_EXECUTION=enabled in the gateway environment.");
     }
     const project = services.projects.get(input.projectId);
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    const tree = workspace(services, input.projectId, input.taskId);
     if (requiresPreparedNodeDependencies(project.runtime, input.mode, input.executable, input.args)
       && !await hasPreparedNodeDependencies(tree.path)) {
       throw new WorkspaceError(
@@ -270,6 +351,57 @@ export function createMcpServer(services: Services): McpServer {
     });
   }));
 
+  const CheckPreset = z.enum([
+    "node-version", "pnpm-version", "git-diff-check", "typecheck", "lint", "tests", "electron-acceptance"
+  ]);
+  server.registerTool("run_task_check", {
+    description: "Run one server-approved check preset for an active workspace. Attached workspaces cannot supply executable or argv.",
+    inputSchema: {
+      projectId: ProjectId, taskId: TaskId, preset: CheckPreset,
+      mode: z.enum(["container", "host"]).default("container"),
+      timeoutSeconds: z.number().int().min(5).max(3600).optional()
+    },
+    annotations: { title: "Run task check", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "run_task_check", {
+    projectId: input.projectId, taskId: input.taskId,
+    networked: input.mode === "host", detail: { preset: input.preset, mode: input.mode }
+  }, async () => {
+    const tree = workspace(services, input.projectId, input.taskId);
+    const project = services.projects.get(input.projectId);
+    const preset = input.preset as TaskCheckPreset;
+    const mode = preset === "electron-acceptance" ? "host" : input.mode;
+    services.workspaces.requireCapability(
+      input.projectId, input.taskId, mode === "host" ? "runHostCommands" : "runContainerCommands"
+    );
+    if (mode === "host" && services.config.HOST_EXECUTION !== "enabled") {
+      throw new WorkspaceError("FORBIDDEN", "Host checks require both workspace permission and HOST_EXECUTION=enabled");
+    }
+    if (preset === "electron-acceptance") {
+      if (tree.kind !== "attached") throw new WorkspaceError("FORBIDDEN", "Native Electron acceptance is only available for attached workspaces");
+      if (process.platform !== "darwin") throw new WorkspaceError("FORBIDDEN", "Native Electron acceptance requires macOS");
+    }
+    const command = await resolveTaskCheckPreset(tree.path, preset);
+    const executionId = randomUUID();
+    let env: Record<string, string> | undefined;
+    if (preset === "electron-acceptance") {
+      const root = await services.artifacts.taskDirectory(executionId);
+      env = await createElectronEnvironment(root);
+    }
+    const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
+    return services.tasks.start({
+      executionId, worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
+      image: mode === "host" ? "host" : defaultImage, mode,
+      executable: command.executable, args: command.args, network: "none",
+      ...(env ? { env } : {}),
+      limits: {
+        memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS,
+        pids: services.config.TASK_DEFAULT_PIDS,
+        timeoutSeconds: Math.min(input.timeoutSeconds ?? services.config.TASK_DEFAULT_TIMEOUT_SECONDS, services.config.TASK_MAX_TIMEOUT_SECONDS),
+        maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES
+      }
+    });
+  }));
+
   server.registerTool("execute_plan", {
     description: "Hand a complete implementation plan to a local coding agent (Claude Code CLI) that executes it autonomously inside the task worktree: it reads the repo, edits files, runs commands and iterates on failures at native speed. One call replaces the per-edit tool loop — write a precise plan (exact files, exact changes, acceptance checks), then poll get_task and read_task_logs (stream-json events) for progress, and review with git_diff before commit_task. backend 'ccr' (default) routes the agent through the local claude-code-router models; 'subscription' uses the operator's own Claude account. Requires the operator to enable AGENT_EXECUTION.",
     inputSchema: {
@@ -281,10 +413,14 @@ export function createMcpServer(services: Services): McpServer {
     },
     annotations: { title: "Execute plan with local agent", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "execute_plan", { projectId: input.projectId, taskId: input.taskId, networked: true, detail: { backend: input.backend, planBytes: Buffer.byteLength(input.plan) } }, async () => {
+    services.workspaces.requireIsolated(
+      input.projectId, input.taskId,
+      "Unrestricted agent execution is only available in isolated worktrees"
+    );
     if (services.config.AGENT_EXECUTION !== "enabled") {
       throw new WorkspaceError("FORBIDDEN", "Agent execution is disabled. The operator must set AGENT_EXECUTION=enabled in the gateway environment.");
     }
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    const tree = workspace(services, input.projectId, input.taskId);
     const executionId = randomUUID();
     const artifactDirectory = await services.artifacts.taskDirectory(executionId);
     const planPath = join(artifactDirectory, "plan.md");
@@ -329,7 +465,10 @@ export function createMcpServer(services: Services): McpServer {
   server.registerTool("list_artifacts", {
     description: "List indexed task artifacts and hashes.", inputSchema: { taskId: TaskId },
     annotations: { title: "List artifacts", readOnlyHint: true, openWorldHint: false }
-  }, async (input) => safely(services, "list_artifacts", { taskId: input.taskId }, () => services.artifacts.list(input.taskId)));
+  }, async (input) => safely(services, "list_artifacts", { taskId: input.taskId }, () => {
+    const workspaceExists = services.database.db.prepare("SELECT 1 FROM task_workspaces WHERE task_id=?").get(input.taskId);
+    return workspaceExists ? services.workspaces.listArtifacts(input.taskId) : services.artifacts.list(input.taskId);
+  }));
 
   server.registerTool("start_dev_server", {
     description: "Start a managed development server inside a constrained container on an internal task-specific network. No host or public port is exposed.",
@@ -340,7 +479,8 @@ export function createMcpServer(services: Services): McpServer {
     },
     annotations: { title: "Start dev server", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }, async (input) => safely(services, "start_dev_server", { projectId: input.projectId, taskId: input.taskId }, async () => {
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    services.workspaces.requireIsolated(input.projectId, input.taskId, "start_dev_server");
+    const tree = workspace(services, input.projectId, input.taskId);
     const project = services.projects.get(input.projectId);
     const defaultImage = project.runtime === "python" ? "gptdev-runner-python:local" : "gptdev-runner-node:local";
     return services.devServers.start({
@@ -364,7 +504,8 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId, serverId: TaskId, actions: z.array(BrowserAction).min(1).max(100) },
     annotations: { title: "Run browser check", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   }, async (input) => safely(services, "run_browser_check", { projectId: input.projectId, taskId: input.taskId }, async () => {
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    services.workspaces.requireIsolated(input.projectId, input.taskId, "run_browser_check");
+    const tree = workspace(services, input.projectId, input.taskId);
     const devServer = services.devServers.get(input.serverId);
     if (devServer.projectId !== input.projectId || devServer.worktreeId !== input.taskId || devServer.status !== "ready") {
       throw new WorkspaceError("CONFLICT", "Dev server is not ready for this worktree");
@@ -382,9 +523,11 @@ export function createMcpServer(services: Services): McpServer {
 
   server.registerTool("sync_project", {
     description: "Fast-forward a clean canonical project checkout from its fixed origin/default branch. Rejects dirty folders, branch changes and non-fast-forward updates.",
-    inputSchema: { projectId: ProjectId },
+    inputSchema: { projectId: ProjectId, taskId: TaskId.optional() },
     annotations: { title: "Sync project", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   }, async (input) => safely(services, "sync_project", { projectId: input.projectId, destructive: true, networked: true }, async () => {
+    if (input.taskId) services.workspaces.requireIsolated(input.projectId, input.taskId, "project synchronisation");
+    services.workspaces.assertNoActiveAttachment(input.projectId, "Project synchronisation");
     const project = services.projects.get(input.projectId);
     return services.git.sync(project.canonicalPath, project.defaultBranch);
   }));
@@ -394,12 +537,12 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId },
     annotations: { title: "Publish task", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   }, async (input) => safely(services, "publish_task", { projectId: input.projectId, taskId: input.taskId, destructive: true, networked: true }, async () => {
-    const tree = worktreeRecord(services.database, input.projectId, input.taskId);
+    const tree = services.workspaces.requireIsolated(input.projectId, input.taskId, "publish_task", false);
     if (tree.status !== "committed") throw new WorkspaceError("CONFLICT", "Only an already committed and tested task can be published");
     const project = services.projects.get(input.projectId);
     const commit = await services.git.head(tree.path);
     const published = await services.git.promote(project.canonicalPath, tree.path, tree.branch, project.defaultBranch);
-    services.database.db.prepare("UPDATE worktrees SET status='published' WHERE task_id=?").run(input.taskId);
+    updateWorkspaceStatus(services, input.taskId, "published");
     return { commit, ...published };
   }));
 
@@ -414,8 +557,8 @@ export function createMcpServer(services: Services): McpServer {
     },
     annotations: { title: "Create pull request", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   }, async (input) => safely(services, "create_pull_request", { projectId: input.projectId, taskId: input.taskId, networked: true }, async () => {
+    const tree = services.workspaces.requireIsolated(input.projectId, input.taskId, "create_pull_request", false);
     if (!services.config.GITHUB_TOKEN) throw new WorkspaceError("FORBIDDEN", "GITHUB_TOKEN is not configured in the gateway environment");
-    const tree = worktreeRecord(services.database, input.projectId, input.taskId);
     if (tree.status !== "committed") throw new WorkspaceError("CONFLICT", "Only an already committed task can open a pull request");
     const project = services.projects.get(input.projectId);
     const base = input.base ?? project.defaultBranch;
@@ -441,7 +584,7 @@ export function createMcpServer(services: Services): McpServer {
     if (response.statusCode >= 400) {
       throw new WorkspaceError("EXECUTION_FAILED", `GitHub API ${String(response.statusCode)}: ${JSON.stringify(result)}`);
     }
-    services.database.db.prepare("UPDATE worktrees SET status='published' WHERE task_id=?").run(input.taskId);
+    updateWorkspaceStatus(services, input.taskId, "published");
     return { number: result.number, url: result.html_url, state: result.state, draft: result.draft, branch: tree.branch, base };
   }));
 
@@ -449,12 +592,15 @@ export function createMcpServer(services: Services): McpServer {
     description: "Merge an open GitHub pull request for the project via the GitHub API using GITHUB_TOKEN. Defaults to a squash merge; the head branch is not deleted. Merge permission and required-check failures come back as errors. Requires GITHUB_TOKEN in the gateway environment.",
     inputSchema: {
       projectId: ProjectId,
+      taskId: TaskId.optional(),
       pullNumber: z.number().int().min(1),
       method: z.enum(["merge", "squash", "rebase"]).default("squash"),
       commitTitle: z.string().min(1).max(256).optional()
     },
     annotations: { title: "Merge pull request", readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   }, async (input) => safely(services, "merge_pull_request", { projectId: input.projectId, destructive: true, networked: true, detail: { pullNumber: input.pullNumber, method: input.method } }, async () => {
+    if (input.taskId) services.workspaces.requireIsolated(input.projectId, input.taskId, "merge_pull_request", false);
+    services.workspaces.assertNoActiveAttachment(input.projectId, "Pull-request merging");
     if (!services.config.GITHUB_TOKEN) throw new WorkspaceError("FORBIDDEN", "GITHUB_TOKEN is not configured in the gateway environment");
     const project = services.projects.get(input.projectId);
 
@@ -485,9 +631,9 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId, message: z.string().min(1).max(500) },
     annotations: { title: "Commit task", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
   }, async (input) => safely(services, "commit_task", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    const tree = services.workspaces.requireIsolated(input.projectId, input.taskId, "commit_task");
     const commit = await services.git.commit(tree.path, input.message);
-    services.database.db.prepare("UPDATE worktrees SET status='committed' WHERE task_id=?").run(input.taskId);
+    updateWorkspaceStatus(services, input.taskId, "committed");
     return { commit, branch: tree.branch };
   }));
 
@@ -496,11 +642,11 @@ export function createMcpServer(services: Services): McpServer {
     inputSchema: { projectId: ProjectId, taskId: TaskId },
     annotations: { title: "Roll back task", readOnlyHint: false, destructiveHint: true, openWorldHint: false }
   }, async (input) => safely(services, "rollback_task", { projectId: input.projectId, taskId: input.taskId, destructive: true }, async () => {
-    const tree = worktree(services.database, input.projectId, input.taskId);
+    const tree = services.workspaces.requireIsolated(input.projectId, input.taskId, "rollback_task");
     const task = services.database.db.prepare("SELECT status FROM tasks WHERE worktree_id=? AND status IN ('queued','preparing','running') LIMIT 1").get(input.taskId) as { status: string } | undefined;
     if (task) throw new WorkspaceError("CONFLICT", "Stop active worktree tasks before rollback");
     await services.git.discard(services.projects.get(input.projectId).canonicalPath, tree.path, tree.branch);
-    services.database.db.prepare("UPDATE worktrees SET status='discarded' WHERE task_id=?").run(input.taskId);
+    updateWorkspaceStatus(services, input.taskId, "discarded");
     return { discarded: true, branch: tree.branch };
   }));
 

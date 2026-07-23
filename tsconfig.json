@@ -4,6 +4,7 @@
     { "path": "./packages/schemas" },
     { "path": "./packages/audit-service" },
     { "path": "./packages/persistence" },
+    { "path": "./packages/workspace-service" },
     { "path": "./packages/projects" },
     { "path": "./packages/git-service" },
     { "path": "./packages/artifact-service" },

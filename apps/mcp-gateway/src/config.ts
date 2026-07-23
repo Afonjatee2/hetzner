@@ -20,6 +20,9 @@ const Environment = z.object({
   TASK_DEFAULT_MEMORY: z.string().regex(/^\d+[kmg]$/i).default("2g"),
   TASK_DEFAULT_CPUS: z.coerce.number().positive().max(64).default(2),
   TASK_DEFAULT_PIDS: z.coerce.number().int().min(16).max(32768).default(256),
+  ATTACHED_BASELINE_MAX_FILE_BYTES: z.coerce.number().int().min(1024).max(104_857_600).default(1_048_576),
+  ATTACHED_BASELINE_MAX_TOTAL_BYTES: z.coerce.number().int().min(1024).max(1_073_741_824).default(20_971_520),
+  ATTACHED_GIT_OUTPUT_MAX_BYTES: z.coerce.number().int().min(65_536).max(1_073_741_824).default(52_428_800),
   HOST_EXECUTION: z.enum(["disabled", "enabled"]).default("disabled"),
   AGENT_EXECUTION: z.enum(["disabled", "enabled"]).default("disabled"),
   HOST_PATH_PREPEND: z.string().optional(),
@@ -63,6 +66,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const senderFields = [parsed.HANDOFF_OUTBOX_DIR, parsed.HANDOFF_SSH_TARGET, parsed.HANDOFF_SSH_KEY_PATH, parsed.HANDOFF_SSH_KNOWN_HOSTS_PATH];
   if (senderFields.some(Boolean) && !senderFields.every(Boolean)) {
     throw new Error("Handoff sender requires OUTBOX_DIR, SSH_TARGET, SSH_KEY_PATH and SSH_KNOWN_HOSTS_PATH");
+  }
+  if (parsed.ATTACHED_BASELINE_MAX_TOTAL_BYTES < parsed.ATTACHED_BASELINE_MAX_FILE_BYTES) {
+    throw new Error("ATTACHED_BASELINE_MAX_TOTAL_BYTES must be at least ATTACHED_BASELINE_MAX_FILE_BYTES");
   }
   const trimmedBaseUrl = parsed.PUBLIC_BASE_URL.replace(/\/+$/, "");
   const oauthIssuer = parsed.AUTH_MODE === "first-party" ? trimmedBaseUrl : parsed.OAUTH_ISSUER;

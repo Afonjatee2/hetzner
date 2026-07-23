@@ -99,6 +99,7 @@ export class TaskService {
         error: result.outputTruncated ? "Task output was truncated at the configured byte limit" : null
       });
     } catch (error) {
+      await this.artifacts.index(taskId).catch(() => []);
       update(this.cancellationRequested.has(taskId) ? "cancelled" : "failed", {
         finished_at: new Date().toISOString(),
         error: redactSecrets(error instanceof Error ? error.message : String(error))
@@ -155,5 +156,30 @@ export class TaskService {
     await this.runnerFor(task.image === "host" ? "host" : "container").cancel(taskId);
     this.database.db.prepare("UPDATE tasks SET status='cancelled', finished_at=? WHERE id=?").run(new Date().toISOString(), taskId);
     return this.get(taskId);
+  }
+
+  async cancelWorkspace(workspaceId: string): Promise<void> {
+    const active = this.database.db.prepare(`
+      SELECT id FROM tasks
+      WHERE worktree_id=? AND status IN ('queued','preparing','running')
+      ORDER BY created_at
+    `).all(workspaceId) as Array<{ id: string }>;
+    for (const { id } of active) {
+      const current = this.get(id);
+      if (current.status === "queued") {
+        // execute() changes queued to preparing synchronously before its first
+        // await, but retain a bounded turn for custom runners/test doubles.
+        await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+      }
+      const refreshed = this.get(id);
+      if (!new Set<TaskStatus>(["preparing", "running"]).has(refreshed.status)) continue;
+      try {
+        await this.cancel(id);
+      } catch (error) {
+        const latest = this.get(id);
+        if (new Set<TaskStatus>(["queued", "preparing", "running"]).has(latest.status)) throw error;
+      }
+      await this.running.get(id);
+    }
   }
 }

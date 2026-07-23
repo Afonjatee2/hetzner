@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
-import { digest } from "@gpt-dev/audit-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import { WorkspaceError } from "@gpt-dev/schemas";
 
@@ -43,7 +42,7 @@ export class ArtifactService {
           const record: ArtifactRecord = {
             id: randomUUID(), taskId, relativePath: relative(root, path),
             mediaType: MEDIA_TYPES[extname(path).toLowerCase()] ?? "application/octet-stream",
-            bytes: info.size, sha256: digest(bytes.toString("base64")), createdAt: new Date().toISOString()
+            bytes: info.size, sha256: createHash("sha256").update(bytes).digest("hex"), createdAt: new Date().toISOString()
           };
           this.database.db.prepare(`
             INSERT INTO artifacts (id, task_id, relative_path, media_type, bytes, sha256, created_at)
@@ -75,4 +74,3 @@ export class ArtifactService {
     return readFile(path);
   }
 }
-
