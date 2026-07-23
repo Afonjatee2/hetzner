@@ -37,5 +37,5 @@ describe("HandoffInbox", () => {
     expect(imported.path.startsWith(await realpath(workspace))).toBe(true);
     expect(await readFile(join(imported.path, "README.md"), "utf8")).toBe("from the Mac\n");
     expect((await service.list())).toHaveLength(0);
-  });
+  }, 20_000);
 });

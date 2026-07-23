@@ -4,7 +4,9 @@ export const ProjectId = z.string().regex(/^[a-z0-9][a-z0-9._-]{1,63}$/);
 export const TaskId = z.string().uuid();
 export const RelativePath = z.string().min(1).max(4096).refine((value) => !value.includes("\0"), "NUL bytes are forbidden");
 export const NetworkMode = z.enum(["none", "registry", "restricted"]);
-export const ExecutionMode = z.enum(["container", "host"]);
+export const CommandExecutionMode = z.enum(["container", "host"]);
+export const ExecutionMode = z.enum(["direct", "external_agent"]);
+export const ExternalAgentProviderProfile = z.enum(["ccr", "claude_subscription"]);
 export const WorkspaceKind = z.enum(["isolated", "attached"]);
 
 export const ProjectRef = z.object({
@@ -18,7 +20,7 @@ export const RunCommandInput = ProjectRef.extend({
   timeoutSeconds: z.number().int().min(5).max(86400).optional(),
   network: NetworkMode.default("none"),
   image: z.string().max(256).optional(),
-  mode: ExecutionMode.default("container")
+  mode: CommandExecutionMode.default("container")
 });
 
 export const TaskStatus = z.enum([
@@ -34,7 +36,9 @@ export const TaskStatus = z.enum([
 
 export type TaskStatus = z.infer<typeof TaskStatus>;
 export type NetworkMode = z.infer<typeof NetworkMode>;
+export type CommandExecutionMode = z.infer<typeof CommandExecutionMode>;
 export type ExecutionMode = z.infer<typeof ExecutionMode>;
+export type ExternalAgentProviderProfile = z.infer<typeof ExternalAgentProviderProfile>;
 export type WorkspaceKind = z.infer<typeof WorkspaceKind>;
 export type RunCommandInput = z.infer<typeof RunCommandInput>;
 

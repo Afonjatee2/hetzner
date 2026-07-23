@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import type { AuditEvent } from "@gpt-dev/audit-service";
 
-const LATEST_SCHEMA_VERSION = 3;
+const LATEST_SCHEMA_VERSION = 4;
 
 export class WorkspaceDatabase {
   readonly db: Database.Database;
@@ -266,6 +266,24 @@ export class WorkspaceDatabase {
       }
       const violations = this.db.pragma("foreign_key_check") as unknown[];
       if (violations.length > 0) throw new Error("Database migration introduced foreign-key violations");
+    }
+    if (current < 4) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE task_workspaces
+            ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'direct'
+            CHECK(execution_mode IN ('direct','external_agent'));
+          ALTER TABLE task_workspaces ADD COLUMN provider_profile TEXT;
+          ALTER TABLE task_workspaces ADD COLUMN selected_model TEXT;
+          ALTER TABLE task_workspaces
+            ADD COLUMN persistent_orchestrator INTEGER NOT NULL DEFAULT 0
+            CHECK(persistent_orchestrator IN (0,1));
+          ALTER TABLE tasks
+            ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'direct'
+            CHECK(execution_mode IN ('direct','external_agent'));
+        `);
+        this.db.pragma("user_version = 4");
+      })();
     }
   }
 

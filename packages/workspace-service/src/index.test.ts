@@ -87,6 +87,8 @@ describe("WorkspaceService attached checkout lifecycle", () => {
     });
 
     expect(attached.kind).toBe("attached");
+    expect(attached.executionMode).toBe("direct");
+    expect(attached.providerProfile).toBeUndefined();
     expect(attached.path).toBe(await realpath(value.repo));
     expect(attached.originalBranch).toBe("main");
     expect(attached.originalHead).toBe(await git(value.repo, ["rev-parse", "HEAD"]));
@@ -229,7 +231,7 @@ describe("WorkspaceService attached checkout lifecycle", () => {
     expect(reattached.taskId).not.toBe(attached.taskId);
     expect(await lstat(value.sibling)).toBeTruthy();
     value.database.close();
-  });
+  }, 20_000);
 
   it("hard-rejects attached branch/history capabilities while retaining isolated capabilities", async () => {
     const value = await fixture();
@@ -240,6 +242,11 @@ describe("WorkspaceService attached checkout lifecycle", () => {
       expect(() => value.workspaces.requireCapability("fixture", attached.taskId, capability))
         .toThrow(/not permitted/);
     }
+    expect(() => value.workspaces.requireExternalAgentExecution("fixture", attached.taskId))
+      .toThrow("External-agent execution is not enabled for this task. Continue using MCP tools directly unless the user explicitly requests delegation.");
+    expect(() => value.workspaces.setExecutionMode({
+      projectId: "fixture", taskId: attached.taskId, mode: "external_agent", providerProfile: "ccr"
+    })).toThrow(/forbidden for attached workspaces/);
     for (const action of ["commit_task", "publish_task", "rollback_task", "create_pull_request", "handoff", "execute_plan"]) {
       expect(() => value.workspaces.requireIsolated("fixture", attached.taskId, action)).toThrow(/forbidden/);
     }

@@ -3,7 +3,7 @@ import type { ArtifactService } from "@gpt-dev/artifact-service";
 import { redactSecrets } from "@gpt-dev/audit-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { SandboxLimits, TaskRunner } from "@gpt-dev/sandbox-runner";
-import type { ExecutionMode, NetworkMode, TaskStatus } from "@gpt-dev/schemas";
+import type { CommandExecutionMode, ExecutionMode, NetworkMode, TaskStatus } from "@gpt-dev/schemas";
 import { WorkspaceError } from "@gpt-dev/schemas";
 
 export interface TaskRecord {
@@ -12,6 +12,7 @@ export interface TaskRecord {
   worktreeId: string;
   worktreePath: string;
   status: TaskStatus;
+  executionMode: ExecutionMode;
   image?: string;
   containerId?: string;
   exitCode?: number;
@@ -31,7 +32,8 @@ export interface StartTaskInput {
   args: string[];
   network: NetworkMode;
   networkName?: string;
-  mode?: ExecutionMode;
+  mode?: CommandExecutionMode;
+  executionMode?: ExecutionMode;
   env?: Record<string, string>;
   extraMounts?: Array<{ source: string; target: string; readOnly?: boolean }>;
   limits: SandboxLimits;
@@ -40,25 +42,35 @@ export interface StartTaskInput {
 export class TaskService {
   private readonly running = new Map<string, Promise<void>>();
   private readonly cancellationRequested = new Set<string>();
+  private readonly terminalNotified = new Set<string>();
 
   constructor(
     private readonly database: WorkspaceDatabase,
     private readonly runner: TaskRunner,
     private readonly artifacts: ArtifactService,
-    private readonly hostRunner?: TaskRunner
+    private readonly hostRunner?: TaskRunner,
+    private readonly onExternalAgentTerminal?: (task: TaskRecord) => void
   ) {}
 
-  private runnerFor(mode: ExecutionMode | undefined): TaskRunner {
+  private runnerFor(mode: CommandExecutionMode | undefined): TaskRunner {
     if (mode !== "host") return this.runner;
     if (!this.hostRunner) throw new WorkspaceError("FORBIDDEN", "Host execution is not enabled on this gateway");
     return this.hostRunner;
   }
 
   reconcileInterrupted(): number {
+    const external = this.database.db.prepare(`
+      SELECT id FROM tasks
+      WHERE status IN ('queued','preparing','running') AND execution_mode='external_agent'
+    `).all() as Array<{ id: string }>;
     const result = this.database.db.prepare(`
       UPDATE tasks SET status='interrupted', finished_at=?, error='Gateway restarted while task was active'
       WHERE status IN ('queued','preparing','running')
     `).run(new Date().toISOString());
+    for (const { id } of external) {
+      this.notifyExternalAgentTerminal(id);
+      this.terminalNotified.delete(id);
+    }
     return result.changes;
   }
 
@@ -66,10 +78,13 @@ export class TaskService {
     const id = input.executionId ?? randomUUID();
     const createdAt = new Date().toISOString();
     this.database.db.prepare(`
-      INSERT INTO tasks (id, project_id, worktree_id, worktree_path, status, image, command_json, created_at)
-      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
-    `).run(id, input.projectId, input.worktreeId, input.worktreePath, input.image, JSON.stringify([input.executable, ...input.args]), createdAt);
-    const promise = this.execute(id, input).finally(() => this.running.delete(id));
+      INSERT INTO tasks (id, project_id, worktree_id, worktree_path, status, execution_mode, image, command_json, created_at)
+      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+    `).run(id, input.projectId, input.worktreeId, input.worktreePath, input.executionMode ?? 'direct', input.image, JSON.stringify([input.executable, ...input.args]), createdAt);
+    const promise = this.execute(id, input).finally(() => {
+      this.running.delete(id);
+      this.terminalNotified.delete(id);
+    });
     this.running.set(id, promise);
     return Promise.resolve(this.get(id));
   }
@@ -106,12 +121,14 @@ export class TaskService {
       });
     } finally {
       this.cancellationRequested.delete(taskId);
+      this.notifyExternalAgentTerminal(taskId);
     }
   }
 
   get(id: string): TaskRecord {
     const row = this.database.db.prepare(`
-      SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status, image,
+      SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status,
+        execution_mode AS executionMode, image,
         container_id AS containerId, exit_code AS exitCode, started_at AS startedAt,
         finished_at AS finishedAt, created_at AS createdAt, error FROM tasks WHERE id=?
     `).get(id) as TaskRecord | undefined;
@@ -121,11 +138,11 @@ export class TaskService {
 
   list(projectId?: string, limit = 100): TaskRecord[] {
     const sql = projectId
-      ? `SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status, image,
+      ? `SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status, execution_mode AS executionMode, image,
           container_id AS containerId, exit_code AS exitCode, started_at AS startedAt,
           finished_at AS finishedAt, created_at AS createdAt, error
          FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT ?`
-      : `SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status, image,
+      : `SELECT id, project_id AS projectId, worktree_id AS worktreeId, worktree_path AS worktreePath, status, execution_mode AS executionMode, image,
           container_id AS containerId, exit_code AS exitCode, started_at AS startedAt,
           finished_at AS finishedAt, created_at AS createdAt, error
          FROM tasks ORDER BY created_at DESC LIMIT ?`;
@@ -148,6 +165,12 @@ export class TaskService {
     return { entries, nextCursor: entries.at(-1)?.sequence ?? cursor };
   }
 
+  async waitForCompletion(taskId: string): Promise<TaskRecord> {
+    const running = this.running.get(taskId);
+    if (running) await running;
+    return this.get(taskId);
+  }
+
   async cancel(taskId: string): Promise<TaskRecord> {
     const task = this.get(taskId);
     if (task.status !== "running" && task.status !== "preparing") throw new WorkspaceError("CONFLICT", "Task is not cancellable");
@@ -155,7 +178,16 @@ export class TaskService {
     // Host tasks are recorded with the sentinel image "host" (they have no container image).
     await this.runnerFor(task.image === "host" ? "host" : "container").cancel(taskId);
     this.database.db.prepare("UPDATE tasks SET status='cancelled', finished_at=? WHERE id=?").run(new Date().toISOString(), taskId);
-    return this.get(taskId);
+    this.notifyExternalAgentTerminal(taskId);
+    return this.waitForCompletion(taskId);
+  }
+
+  private notifyExternalAgentTerminal(taskId: string): void {
+    if (this.terminalNotified.has(taskId)) return;
+    const task = this.get(taskId);
+    if (task.executionMode !== "external_agent" || new Set<TaskStatus>(["queued", "preparing", "running"]).has(task.status)) return;
+    this.terminalNotified.add(taskId);
+    this.onExternalAgentTerminal?.(task);
   }
 
   async cancelWorkspace(workspaceId: string): Promise<void> {

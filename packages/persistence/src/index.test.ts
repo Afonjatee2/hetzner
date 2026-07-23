@@ -60,10 +60,10 @@ describe("WorkspaceDatabase migrations", () => {
     legacy.close();
 
     const migrated = new WorkspaceDatabase(path);
-    expect(migrated.db.pragma("user_version", { simple: true })).toBe(3);
-    expect(migrated.db.prepare("SELECT kind,status FROM task_workspaces").get())
-      .toEqual({ kind: "isolated", status: "active" });
-    expect(migrated.db.prepare("SELECT status FROM tasks").get()).toEqual({ status: "succeeded" });
+    expect(migrated.db.pragma("user_version", { simple: true })).toBe(4);
+    expect(migrated.db.prepare("SELECT kind,status,execution_mode AS executionMode,provider_profile AS providerProfile FROM task_workspaces").get())
+      .toEqual({ kind: "isolated", status: "active", executionMode: "direct", providerProfile: null });
+    expect(migrated.db.prepare("SELECT status,execution_mode AS executionMode FROM tasks").get()).toEqual({ status: "succeeded", executionMode: "direct" });
     expect(migrated.db.prepare("SELECT content FROM task_logs").get()).toEqual({ content: "ok" });
     expect(migrated.db.pragma("foreign_key_check")).toEqual([]);
     const tasksSql = (migrated.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").get() as { sql: string }).sql;

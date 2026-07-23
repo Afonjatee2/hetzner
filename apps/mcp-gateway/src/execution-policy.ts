@@ -1,6 +1,6 @@
 import { access, mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import type { ExecutionMode } from "@gpt-dev/schemas";
+import type { CommandExecutionMode } from "@gpt-dev/schemas";
 import { WorkspaceError } from "@gpt-dev/schemas";
 
 const PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn", "bun"]);
@@ -12,7 +12,7 @@ const DEPENDENCY_MARKERS = ["node_modules", ".pnp.cjs", ".pnp.loader.mjs"];
 
 export function requiresPreparedNodeDependencies(
   runtime: "node" | "python" | "generic",
-  mode: ExecutionMode,
+  mode: CommandExecutionMode,
   executable: string,
   args: string[]
 ): boolean {

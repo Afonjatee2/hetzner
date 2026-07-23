@@ -12,7 +12,7 @@ import type { HandoffInbox, HandoffSender } from "@gpt-dev/handoff-service";
 import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import type { ProjectService } from "@gpt-dev/projects";
 import type { DockerSandboxRunner } from "@gpt-dev/sandbox-runner";
-import { ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from "@gpt-dev/schemas";
+import { ExecutionMode, ExternalAgentProviderProfile, ProjectId, RelativePath, RunCommandInput, TaskId, WorkspaceError } from "@gpt-dev/schemas";
 import type { SkillsService } from "@gpt-dev/skills-service";
 import type { TaskService } from "@gpt-dev/task-service";
 import { NEW_FILE_SHA256, type WorkspaceRecord, type WorkspaceService } from "@gpt-dev/workspace-service";
@@ -21,6 +21,19 @@ import {
   createElectronEnvironment, hasPreparedNodeDependencies, requiresPreparedNodeDependencies, resolveTaskCheckPreset,
   type TaskCheckPreset
 } from "./execution-policy.js";
+
+export const EXECUTE_PLAN_DESCRIPTION = "Execute a plan with a separately configured external coding model. This tool is available only after the user explicitly delegates the task and set_task_execution_mode persists external_agent with a provider profile. It is never selected automatically because a task is large or complex. Poll get_task and read_task_logs, then review git_diff before committing.";
+
+function externalAgentEnvironment(services: Services, providerProfile: string): Record<string, string> {
+  if (providerProfile === "ccr") {
+    return {
+      ANTHROPIC_BASE_URL: services.config.AGENT_BACKEND_BASE_URL,
+      ANTHROPIC_API_KEY: services.config.AGENT_BACKEND_API_KEY ?? "local"
+    };
+  }
+  if (providerProfile === "claude_subscription") return {};
+  throw new WorkspaceError("VALIDATION", `Unsupported external-agent provider profile: ${providerProfile}`);
+}
 
 export interface Services {
   config: Config;
@@ -402,49 +415,101 @@ export function createMcpServer(services: Services): McpServer {
     });
   }));
 
-  server.registerTool("execute_plan", {
-    description: "Hand a complete implementation plan to a local coding agent (Claude Code CLI) that executes it autonomously inside the task worktree: it reads the repo, edits files, runs commands and iterates on failures at native speed. One call replaces the per-edit tool loop — write a precise plan (exact files, exact changes, acceptance checks), then poll get_task and read_task_logs (stream-json events) for progress, and review with git_diff before commit_task. backend 'ccr' (default) routes the agent through the local claude-code-router models; 'subscription' uses the operator's own Claude account. Requires the operator to enable AGENT_EXECUTION.",
+  server.registerTool("set_task_execution_mode", {
+    description: "Persist the task execution mode. Tasks remain in direct mode unless the user explicitly requests external delegation. external_agent requires an explicit providerProfile; no provider or subscription is selected automatically.",
     inputSchema: {
-      projectId: ProjectId, taskId: TaskId,
+      projectId: ProjectId,
+      taskId: TaskId,
+      mode: ExecutionMode,
+      providerProfile: ExternalAgentProviderProfile.optional(),
+      model: z.string().min(1).max(128).optional(),
+      persistentOrchestratorSession: z.boolean().default(false)
+    },
+    annotations: { title: "Set task execution mode", readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  }, async (input) => safely(services, "set_task_execution_mode", {
+    projectId: input.projectId,
+    taskId: input.taskId,
+    detail: {
+      mode: input.mode,
+      providerProfile: input.providerProfile ?? null,
+      model: input.model ?? null,
+      persistentOrchestratorSession: input.persistentOrchestratorSession
+    }
+  }, () => services.workspaces.setExecutionMode({
+    projectId: input.projectId,
+    taskId: input.taskId,
+    mode: input.mode,
+    ...(input.providerProfile ? { providerProfile: input.providerProfile } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    persistentOrchestratorSession: input.persistentOrchestratorSession
+  })));
+
+  server.registerTool("execute_plan", {
+    description: EXECUTE_PLAN_DESCRIPTION,
+    inputSchema: {
+      projectId: ProjectId,
+      taskId: TaskId,
       plan: z.string().min(20).max(200_000),
-      backend: z.enum(["ccr", "subscription"]).default("ccr"),
-      model: z.string().max(128).optional(),
       timeoutSeconds: z.number().int().min(60).max(86400).default(3600)
     },
-    annotations: { title: "Execute plan with local agent", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
-  }, async (input) => safely(services, "execute_plan", { projectId: input.projectId, taskId: input.taskId, networked: true, detail: { backend: input.backend, planBytes: Buffer.byteLength(input.plan) } }, async () => {
+    annotations: { title: "Execute explicitly delegated external plan", readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  }, async (input) => safely(services, "execute_plan", {
+    projectId: input.projectId,
+    taskId: input.taskId,
+    networked: true,
+    detail: { planBytes: Buffer.byteLength(input.plan) }
+  }, async () => {
+    const selected = services.workspaces.requireExternalAgentExecution(input.projectId, input.taskId);
     services.workspaces.requireIsolated(
-      input.projectId, input.taskId,
-      "Unrestricted agent execution is only available in isolated worktrees"
+      input.projectId,
+      input.taskId,
+      "Unrestricted external-agent execution is only available in isolated worktrees"
     );
-    if (services.config.AGENT_EXECUTION !== "enabled") {
-      throw new WorkspaceError("FORBIDDEN", "Agent execution is disabled. The operator must set AGENT_EXECUTION=enabled in the gateway environment.");
+    try {
+      if (services.config.AGENT_EXECUTION !== "enabled") {
+        throw new WorkspaceError("FORBIDDEN", "Agent execution is disabled. The operator must set AGENT_EXECUTION=enabled in the gateway environment.");
+      }
+      const executionId = randomUUID();
+      const artifactDirectory = await services.artifacts.taskDirectory(executionId);
+      const planPath = join(artifactDirectory, "plan.md");
+      await writeFile(planPath, input.plan, "utf8");
+      const prompt = [
+        `Execute the implementation plan stored at ${planPath}. Read it fully before changing anything.`,
+        "Work only inside the current directory, which is an isolated git worktree for this task.",
+        "Implement the plan exactly, run the acceptance checks it defines, and fix failures until they pass.",
+        "If dependency preparation or another prerequisite fails, stop dependent checks and report the infrastructure failure clearly instead of treating them as code failures.",
+        "Never run git push, never publish, and never modify files outside the worktree.",
+        "Finish with a concise summary of the changes made and the final check results."
+      ].join(" ");
+      const env = externalAgentEnvironment(services, selected.providerProfile!);
+      return services.tasks.start({
+        executionId,
+        worktreeId: input.taskId,
+        projectId: input.projectId,
+        worktreePath: selected.path,
+        executionMode: "external_agent",
+        image: "host",
+        mode: "host",
+        executable: services.config.AGENT_CLI_PATH,
+        args: [
+          "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions",
+          ...(selected.selectedModel ? ["--model", selected.selectedModel] : []),
+          "-p", prompt
+        ],
+        network: "none",
+        env,
+        limits: {
+          memory: services.config.TASK_DEFAULT_MEMORY,
+          cpus: services.config.TASK_DEFAULT_CPUS,
+          pids: services.config.TASK_DEFAULT_PIDS,
+          timeoutSeconds: Math.min(input.timeoutSeconds, services.config.TASK_MAX_TIMEOUT_SECONDS),
+          maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES
+        }
+      });
+    } catch (error) {
+      services.workspaces.resetExternalAgentExecution(input.projectId, input.taskId, "execution_start_failed");
+      throw error;
     }
-    const tree = workspace(services, input.projectId, input.taskId);
-    const executionId = randomUUID();
-    const artifactDirectory = await services.artifacts.taskDirectory(executionId);
-    const planPath = join(artifactDirectory, "plan.md");
-    await writeFile(planPath, input.plan, "utf8");
-    const prompt = [
-      `Execute the implementation plan stored at ${planPath}. Read it fully before changing anything.`,
-      "Work only inside the current directory, which is an isolated git worktree for this task.",
-      "Implement the plan exactly, run the acceptance checks it defines, and fix failures until they pass.",
-      "If dependency preparation or another prerequisite fails, stop dependent checks and report the infrastructure failure clearly instead of treating them as code failures.",
-      "Never run git push, never publish, and never modify files outside the worktree.",
-      "Finish with a concise summary of the changes made and the final check results."
-    ].join(" ");
-    const env: Record<string, string> = input.backend === "ccr"
-      ? { ANTHROPIC_BASE_URL: services.config.AGENT_BACKEND_BASE_URL, ANTHROPIC_API_KEY: services.config.AGENT_BACKEND_API_KEY ?? "local" }
-      : {};
-    return services.tasks.start({
-      executionId, worktreeId: input.taskId, projectId: input.projectId, worktreePath: tree.path,
-      image: "host", mode: "host",
-      executable: services.config.AGENT_CLI_PATH,
-      args: ["--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", ...(input.model ? ["--model", input.model] : []), "-p", prompt],
-      network: "none", env,
-      limits: { memory: services.config.TASK_DEFAULT_MEMORY, cpus: services.config.TASK_DEFAULT_CPUS, pids: services.config.TASK_DEFAULT_PIDS,
-        timeoutSeconds: Math.min(input.timeoutSeconds, services.config.TASK_MAX_TIMEOUT_SECONDS), maxOutputBytes: services.config.TASK_MAX_OUTPUT_BYTES }
-    });
   }));
 
   server.registerTool("get_task", {

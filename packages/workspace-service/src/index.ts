@@ -9,10 +9,11 @@ import type { WorkspaceDatabase } from "@gpt-dev/persistence";
 import { isProtectedPath, resolveContained, type ProjectRecord } from "@gpt-dev/projects";
 import {
   ATTACHED_CAPABILITIES, ISOLATED_CAPABILITIES, WorkspaceError,
-  type WorkspaceCapabilities, type WorkspaceKind
+  type ExecutionMode, type WorkspaceCapabilities, type WorkspaceKind
 } from "@gpt-dev/schemas";
 
 export const NEW_FILE_SHA256 = "NEW_FILE";
+export const EXTERNAL_AGENT_DISABLED_MESSAGE = "External-agent execution is not enabled for this task. Continue using MCP tools directly unless the user explicitly requests delegation.";
 
 export interface WorkspaceRecord {
   taskId: string;
@@ -24,6 +25,10 @@ export interface WorkspaceRecord {
   originalBranch?: string;
   baselineManifestPath?: string;
   finalManifestPath?: string;
+  executionMode: ExecutionMode;
+  providerProfile?: string;
+  selectedModel?: string;
+  persistentOrchestratorSession: boolean;
   capabilities: WorkspaceCapabilities;
   siblingWorktrees: string[];
   activePath?: string;
@@ -201,6 +206,8 @@ export class WorkspaceService {
       SELECT task_id AS taskId, project_id AS projectId, kind, path, branch,
         original_head AS originalHead, original_branch AS originalBranch,
         baseline_manifest_path AS baselineManifestPath, final_manifest_path AS finalManifestPath,
+        execution_mode AS executionMode, provider_profile AS providerProfile,
+        selected_model AS selectedModel, persistent_orchestrator AS persistentOrchestrator,
         capability_profile_json AS capabilityProfileJson,
         sibling_worktrees_json AS siblingWorktreesJson, active_path AS activePath,
         status, created_at AS createdAt, closed_at AS closedAt
@@ -215,6 +222,10 @@ export class WorkspaceService {
       originalBranch: string | null;
       baselineManifestPath: string | null;
       finalManifestPath: string | null;
+      executionMode: ExecutionMode;
+      providerProfile: string | null;
+      selectedModel: string | null;
+      persistentOrchestrator: number;
       capabilityProfileJson: string;
       siblingWorktreesJson: string;
       activePath: string | null;
@@ -234,6 +245,10 @@ export class WorkspaceService {
       ...(row.originalBranch ? { originalBranch: row.originalBranch } : {}),
       ...(row.baselineManifestPath ? { baselineManifestPath: row.baselineManifestPath } : {}),
       ...(row.finalManifestPath ? { finalManifestPath: row.finalManifestPath } : {}),
+      executionMode: row.executionMode,
+      ...(row.providerProfile ? { providerProfile: row.providerProfile } : {}),
+      ...(row.selectedModel ? { selectedModel: row.selectedModel } : {}),
+      persistentOrchestratorSession: row.persistentOrchestrator === 1,
       capabilities: JSON.parse(row.capabilityProfileJson) as WorkspaceCapabilities,
       siblingWorktrees: JSON.parse(row.siblingWorktreesJson) as string[],
       ...(row.activePath ? { activePath: row.activePath } : {}),
@@ -250,8 +265,8 @@ export class WorkspaceService {
     this.database.db.prepare(`
       INSERT INTO task_workspaces (
         task_id, project_id, kind, path, branch, original_head, original_branch,
-        capability_profile_json, sibling_worktrees_json, active_path, status, created_at
-      ) VALUES (@taskId,@projectId,'isolated',@path,@branch,@originalHead,@branch,@capabilities,'[]',@activePath,'active',@createdAt)
+        capability_profile_json, sibling_worktrees_json, active_path, execution_mode, status, created_at
+      ) VALUES (@taskId,@projectId,'isolated',@path,@branch,@originalHead,@branch,@capabilities,'[]',@activePath,'direct','active',@createdAt)
     `).run({ ...input, activePath, capabilities: JSON.stringify(ISOLATED_CAPABILITIES) });
     return this.get(input.projectId, input.taskId);
   }
@@ -321,10 +336,10 @@ export class WorkspaceService {
         INSERT INTO task_workspaces (
           task_id, project_id, kind, path, branch, original_head, original_branch,
           baseline_manifest_path, capability_profile_json, sibling_worktrees_json,
-          active_path, status, created_at
+          active_path, execution_mode, status, created_at
         ) VALUES (
           @taskId,@projectId,'attached',@path,@branch,@head,@branch,
-          @baselineManifestPath,@capabilities,@siblings,@path,'active',@createdAt
+          @baselineManifestPath,@capabilities,@siblings,@path,'direct','active',@createdAt
         )
       `).run({
         taskId, projectId: input.project.id, path: root, branch, head: baseline.head,
@@ -341,6 +356,100 @@ export class WorkspaceService {
     const workspace = this.get(input.project.id, taskId);
     this.indexBaselineArtifact(workspace);
     return workspace;
+  }
+
+  setExecutionMode(input: {
+    projectId: string;
+    taskId: string;
+    mode: ExecutionMode;
+    providerProfile?: string;
+    model?: string;
+    persistentOrchestratorSession?: boolean;
+  }): WorkspaceRecord {
+    return this.transitionExecutionMode(input, "mcp-user", "explicit_user_request", true);
+  }
+
+  requireExternalAgentExecution(projectId: string, taskId: string): WorkspaceRecord {
+    const workspace = this.get(projectId, taskId);
+    if (workspace.executionMode !== "external_agent") {
+      throw new WorkspaceError("FORBIDDEN", EXTERNAL_AGENT_DISABLED_MESSAGE);
+    }
+    if (!workspace.providerProfile) {
+      throw new WorkspaceError("CONFLICT", "External-agent execution has no persisted provider profile");
+    }
+    return workspace;
+  }
+
+  resetExternalAgentExecution(projectId: string, taskId: string, reason: string): WorkspaceRecord {
+    const current = this.get(projectId, taskId, false);
+    if (current.executionMode !== "external_agent" || current.persistentOrchestratorSession) return current;
+    return this.transitionExecutionMode(
+      { projectId, taskId, mode: "direct" },
+      "system:external-agent-lifecycle",
+      reason,
+      false
+    );
+  }
+
+  private transitionExecutionMode(input: {
+    projectId: string;
+    taskId: string;
+    mode: ExecutionMode;
+    providerProfile?: string;
+    model?: string;
+    persistentOrchestratorSession?: boolean;
+  }, actor: string, reason: string, requireActive: boolean): WorkspaceRecord {
+    const previous = this.get(input.projectId, input.taskId, requireActive);
+    const providerProfile = input.providerProfile?.trim();
+    const selectedModel = input.model?.trim();
+    const persistentOrchestratorSession = input.persistentOrchestratorSession === true;
+    if (input.mode === "external_agent" && previous.kind === "attached") {
+      throw new WorkspaceError("FORBIDDEN", "External-agent execution is forbidden for attached workspaces");
+    }
+    if (input.mode === "external_agent" && !providerProfile) {
+      throw new WorkspaceError("VALIDATION", "providerProfile is required when enabling external-agent execution");
+    }
+    if (input.mode === "direct" && (providerProfile || selectedModel || persistentOrchestratorSession)) {
+      throw new WorkspaceError("VALIDATION", "Direct execution mode cannot retain an external provider, model, or persistent orchestrator session");
+    }
+    const timestamp = new Date().toISOString();
+    this.database.db.transaction(() => {
+      this.database.db.prepare(`
+        UPDATE task_workspaces
+        SET execution_mode=?, provider_profile=?, selected_model=?, persistent_orchestrator=?
+        WHERE task_id=? AND project_id=?
+      `).run(
+        input.mode,
+        input.mode === "external_agent" ? providerProfile : null,
+        input.mode === "external_agent" ? selectedModel ?? null : null,
+        input.mode === "external_agent" && persistentOrchestratorSession ? 1 : 0,
+        input.taskId,
+        input.projectId
+      );
+      this.database.recordAudit({
+        id: randomUUID(),
+        timestamp,
+        action: "task_execution_mode_transition",
+        actor,
+        projectId: input.projectId,
+        taskId: input.taskId,
+        destructive: false,
+        networked: input.mode === "external_agent",
+        detail: {
+          taskId: input.taskId,
+          previousMode: previous.executionMode,
+          newMode: input.mode,
+          previousProviderProfile: previous.providerProfile ?? null,
+          newProviderProfile: input.mode === "external_agent" ? providerProfile : null,
+          previousModel: previous.selectedModel ?? null,
+          newModel: input.mode === "external_agent" ? selectedModel ?? null : null,
+          persistentOrchestratorSession: input.mode === "external_agent" && persistentOrchestratorSession,
+          timestamp,
+          reason
+        }
+      });
+    })();
+    return this.get(input.projectId, input.taskId, requireActive);
   }
 
   requireCapability(

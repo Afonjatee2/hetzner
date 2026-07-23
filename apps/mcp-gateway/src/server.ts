@@ -31,12 +31,23 @@ const artifacts = new ArtifactService(database, config.artifactDir);
 const hostRunner = config.HOST_EXECUTION === "enabled" || config.AGENT_EXECUTION === "enabled"
   ? new HostProcessRunner(config.HOST_PATH_PREPEND ? { pathPrepend: config.HOST_PATH_PREPEND } : {})
   : undefined;
-const tasks = new TaskService(database, runner, artifacts, hostRunner);
+const taskHolder: { service?: TaskService } = {};
 const workspaces = new WorkspaceService(database, config.artifactDir, {
   perFileBytes: config.ATTACHED_BASELINE_MAX_FILE_BYTES,
   totalBytes: config.ATTACHED_BASELINE_MAX_TOTAL_BYTES,
   gitOutputBytes: config.ATTACHED_GIT_OUTPUT_MAX_BYTES
-}, (workspaceId) => tasks.cancelWorkspace(workspaceId));
+}, (workspaceId) => {
+  if (!taskHolder.service) throw new Error("Task service is not initialised");
+  return taskHolder.service.cancelWorkspace(workspaceId);
+});
+const tasks = new TaskService(database, runner, artifacts, hostRunner, (task) => {
+  workspaces.resetExternalAgentExecution(
+    task.projectId,
+    task.worktreeId,
+    `execution_${task.status}`
+  );
+});
+taskHolder.service = tasks;
 const browser = new BrowserService();
 const devServers = new DevServerService(database);
 const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && config.handoffSshKeyPath && config.handoffKnownHostsPath
