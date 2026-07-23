@@ -163,8 +163,19 @@ export class ProjectService {
 
   async remove(root: string, requested: string): Promise<void> {
     assertUnprotected(requested);
-    const path = await resolveContained(root, requested);
-    if (path === await realpath(root)) throw new WorkspaceError("FORBIDDEN", "Cannot remove the project root");
+    const rootReal = await realpath(root);
+    const candidate = resolve(rootReal, requested);
+    if (!isInside(rootReal, candidate) || candidate === rootReal) {
+      throw new WorkspaceError("FORBIDDEN", "Cannot remove a path outside the project root");
+    }
+    const parent = await realpath(dirname(candidate)).catch(() => {
+      throw new WorkspaceError("NOT_FOUND", `Parent path not found: ${dirname(requested)}`);
+    });
+    if (!isInside(rootReal, parent)) throw new WorkspaceError("FORBIDDEN", "Path escapes the approved project root");
+    const path = resolve(parent, basename(candidate));
+    await lstat(path).catch(() => {
+      throw new WorkspaceError("NOT_FOUND", `Path not found: ${requested}`);
+    });
     await rm(path, { recursive: true, force: false });
   }
 

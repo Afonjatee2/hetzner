@@ -62,6 +62,17 @@ describe("loadConfig", () => {
     expect(config.HOST_EXECUTION).toBe("disabled");
   });
 
+  it("provides bounded attached baseline defaults and rejects an invalid total", () => {
+    const config = loadConfig({ ...BASE_ENV });
+    expect(config.ATTACHED_BASELINE_MAX_FILE_BYTES).toBeGreaterThan(0);
+    expect(config.ATTACHED_BASELINE_MAX_TOTAL_BYTES).toBeGreaterThanOrEqual(config.ATTACHED_BASELINE_MAX_FILE_BYTES);
+    expect(() => loadConfig({
+      ...BASE_ENV,
+      ATTACHED_BASELINE_MAX_FILE_BYTES: "4096",
+      ATTACHED_BASELINE_MAX_TOTAL_BYTES: "1024"
+    })).toThrow(/TOTAL/);
+  });
+
   it("accepts a local-files profile with a fixed SSH handoff target", () => {
     const config = loadConfig({
       ...BASE_ENV,

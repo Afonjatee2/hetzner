@@ -96,12 +96,12 @@ importers:
       '@gpt-dev/task-service':
         specifier: workspace:*
         version: link:../../packages/task-service
+      '@gpt-dev/workspace-service':
+        specifier: workspace:*
+        version: link:../../packages/workspace-service
 
   packages/artifact-service:
     dependencies:
-      '@gpt-dev/audit-service':
-        specifier: workspace:*
-        version: link:../audit-service
       '@gpt-dev/persistence':
         specifier: workspace:*
         version: link:../persistence
@@ -190,6 +190,18 @@ importers:
       '@gpt-dev/sandbox-runner':
         specifier: workspace:*
         version: link:../sandbox-runner
+      '@gpt-dev/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+
+  packages/workspace-service:
+    dependencies:
+      '@gpt-dev/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@gpt-dev/projects':
+        specifier: workspace:*
+        version: link:../projects
       '@gpt-dev/schemas':
         specifier: workspace:*
         version: link:../schemas

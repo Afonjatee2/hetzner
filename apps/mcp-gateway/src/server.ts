@@ -12,6 +12,7 @@ import { ProjectService } from "@gpt-dev/projects";
 import { DockerSandboxRunner, HostProcessRunner } from "@gpt-dev/sandbox-runner";
 import { SkillsService } from "@gpt-dev/skills-service";
 import { TaskService } from "@gpt-dev/task-service";
+import { WorkspaceService } from "@gpt-dev/workspace-service";
 import { AuthService } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { loadOrCreateSigningKey } from "./oauth/keys.js";
@@ -30,7 +31,23 @@ const artifacts = new ArtifactService(database, config.artifactDir);
 const hostRunner = config.HOST_EXECUTION === "enabled" || config.AGENT_EXECUTION === "enabled"
   ? new HostProcessRunner(config.HOST_PATH_PREPEND ? { pathPrepend: config.HOST_PATH_PREPEND } : {})
   : undefined;
-const tasks = new TaskService(database, runner, artifacts, hostRunner);
+const taskHolder: { service?: TaskService } = {};
+const workspaces = new WorkspaceService(database, config.artifactDir, {
+  perFileBytes: config.ATTACHED_BASELINE_MAX_FILE_BYTES,
+  totalBytes: config.ATTACHED_BASELINE_MAX_TOTAL_BYTES,
+  gitOutputBytes: config.ATTACHED_GIT_OUTPUT_MAX_BYTES
+}, (workspaceId) => {
+  if (!taskHolder.service) throw new Error("Task service is not initialised");
+  return taskHolder.service.cancelWorkspace(workspaceId);
+});
+const tasks = new TaskService(database, runner, artifacts, hostRunner, (task) => {
+  workspaces.resetExternalAgentExecution(
+    task.projectId,
+    task.worktreeId,
+    `execution_${task.status}`
+  );
+});
+taskHolder.service = tasks;
 const browser = new BrowserService();
 const devServers = new DevServerService(database);
 const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && config.handoffSshKeyPath && config.handoffKnownHostsPath
@@ -45,7 +62,7 @@ const handoffSender = config.handoffOutboxDir && config.HANDOFF_SSH_TARGET && co
 const handoffInbox = config.handoffInboxDir ? new HandoffInbox(config.handoffInboxDir, config.workspaceRoot) : undefined;
 const skills = config.skillsRoot ? new SkillsService(config.skillsRoot) : undefined;
 const interrupted = tasks.reconcileInterrupted();
-const services = { config, database, projects, git, runner, tasks, artifacts, browser, devServers, handoffSender, handoffInbox, skills };
+const services = { config, database, projects, git, runner, tasks, workspaces, artifacts, browser, devServers, handoffSender, handoffInbox, skills };
 const firstPartySigningKey = config.AUTH_MODE === "first-party" ? await loadOrCreateSigningKey(config.signingKeyPath) : undefined;
 const auth = new AuthService(config, firstPartySigningKey ? [firstPartySigningKey] : undefined);
 // Only trust X-Forwarded-For from loopback: cloudflared (or any local reverse
